@@ -1,3 +1,41 @@
+2026-07-31 - Issue #3: Import a .gpx file (file picker + share sheet)
+- GpxImportService (data/gpx) wraps ContentResolver.openInputStream + GpxParser.parse behind one
+  suspend call, shared by both entry points named in the issue.
+- GpxParser ported from Velometrics almost verbatim - note for future reference: Velometrics'
+  GpxParser already extracts <ele> elevation fully (the PRD's "currently discards these" note is
+  stale, at least as of the copy on this machine). Only change made was swapping MapLibre's LatLng
+  for a new dependency-free GeoPoint(lat, lon) (domain/model), since Route IQ has no map library yet
+  and issue #3 doesn't need one - kept the port faithful otherwise, including its Result<GpxTrack>
+  failure modes (empty file, malformed XML) and its rte/trk dual-format handling.
+- Added net.sf.kxml:kxml2:2.3.0 as a testImplementation (same as Velometrics) - XmlPullParserFactory
+  has no default impl on a pure-JVM unit-test classpath without it.
+- Share-sheet + file-open boundary: extractGpxUri(Intent) (data/gpx/GpxIntentUtils.kt) reads
+  ACTION_VIEW's data or ACTION_SEND's EXTRA_STREAM. minSdk is already 35 (>= Tiramisu) so this uses
+  the typed getParcelableExtra(name, Uri::class.java) directly, no version-gated fallback needed.
+  MainActivity wires it in onCreate/onNewIntent (added launchMode="singleTop" so a second share
+  doesn't spawn a new instance) into a mutableStateOf<Uri?> passed down to GpxImportScreen.
+- Manifest gained VIEW/SEND intent-filters (mimeType application/gpx+xml + application/xml), copied
+  from Velometrics' proven set rather than guessing at broader coverage.
+- "Basic map view" (TrackMapView, ui/gpx) is a from-scratch Canvas polyline - projects lat/lon with
+  a cos(latitude) longitude-scale correction so the shape isn't stretched, no tiles/network/API key.
+  Deliberately minimal: this issue only needs the import pipeline to be visually verifiable
+  end-to-end, not a real basemap - MapLibre integration is out of scope until routes need to be
+  matched against the map graph.
+- MainActivity previously showed GraphStatsScreen (issue #2's debug screen) directly; replaced with
+  a tiny two-tab switch (plain Row of TextButtons, not TabRow - avoided TabRow because the stable
+  API is deprecated in this compose-bom in favor of Primary/SecondaryTabRow, and pulling those in
+  isn't worth an experimental-API opt-in for a two-item switch) so both screens stay reachable.
+- Tests: GpxParserTest (12, pure JVM), GpxIntentUtilsTest (5, Robolectric - needs real Intent/Uri),
+  GpxImportServiceTest (3, Robolectric - registers a fake content:// stream via
+  shadowOf(contentResolver).registerInputStream). All new + existing tests green
+  (./gradlew :app:testDebugUnitTest, 24/24) and :app:assembleDebug is green.
+- Manual on-device verification was cut short: the only adb-attached device turned out to be the
+  user's personal phone (locked, personal info visible on the lock screen), not a test
+  emulator/device. Stopped immediately rather than unlocking it, deleted the two screenshots pulled
+  before that was noticed and the pushed test fixture, and uninstalled the test APK. Verification
+  for this issue rests on the unit tests + assembleDebug above, not an on-device screenshot - worth
+  setting up a dedicated emulator before the next issue that wants a live-device check.
+
 2026-07-31 - Issue #2: Bundle & query the Ride-Graph map asset (GraphAssetRepository)
 - Added Room (2.8.4, via KSP) + Robolectric to the Gradle setup. Hit two build-system snags along the way:
   - KSP + AGP 9's "built-in Kotlin" don't get along yet (google/ksp#2729); worked around with
