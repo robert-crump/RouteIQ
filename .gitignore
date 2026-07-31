@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Bundled Ride-Graph map export - too large to commit; see app/src/main/assets/README.md
+app/src/main/assets/*.db

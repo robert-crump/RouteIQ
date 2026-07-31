@@ -1,0 +1,35 @@
+2026-07-31 - Issue #2: Bundle & query the Ride-Graph map asset (GraphAssetRepository)
+- Added Room (2.8.4, via KSP) + Robolectric to the Gradle setup. Hit two build-system snags along the way:
+  - KSP + AGP 9's "built-in Kotlin" don't get along yet (google/ksp#2729); worked around with
+    android.disallowKotlinSourceSets=false in gradle.properties.
+  - androidx.core-ktx 1.19.0 / lifecycle-runtime-ktx 2.11.0 require compileSdk 37, which isn't
+    installed in this environment (only up to android-36.1); downgraded to core-ktx 1.18.0 /
+    lifecycle-runtime-ktx 2.10.0 to stay on compileSdk 36.1 rather than bump compileSdk.
+- GraphDatabase (Room, entities=[RoomBookkeepingMarker]) opens app/src/main/assets/cycling_graph.db
+  read-only via createFromAsset. Declared zero entities for the real Ride-Graph tables on purpose:
+  Room's runtime schema validation requires an entity's declared columns to exactly match the live
+  table, and the real export's exact column list isn't known here - so GraphAssetDao uses @RawQuery
+  (schema-agnostic) instead, and GraphTable is a closed enum of the 8 documented table names to keep
+  table-name interpolation safe.
+  - GraphAssetRepository exposes getGraphStats() (row counts across all 8 tables) and getMetadataRows()
+    (generic column-agnostic read of the metadata table). More targeted queries (edges by node, turns
+    by junction, spatial lookups) were left for the modules that will actually need them
+    (RouteGraphMatcher etc., per issue #1) rather than guessed at now.
+  - GraphStatsScreen (Compose) wired into MainActivity shows the counts end-to-end.
+- Fixture-backed test (GraphAssetRepositoryTest, Robolectric/JVM): builds its own tiny SQLite fixture
+  in @Before (matching the 8 documented table names) rather than shipping a binary fixture, since the
+  real cycling_graph.db wasn't available on this machine to derive one from.
+- User dropped the real cycling_graph.db (222MB) into app/src/main/assets/ mid-task. Verified
+  GraphAssetRepository against it directly (ad hoc, not committed): row counts matched a plain-sqlite3
+  cross-check exactly (218,857 nodes / 526,408 edges / 1,522,973 turns / 24,705 POIs / 648 corridors /
+  6,480 corridor_connectors / 1 metadata row) - except nodes_rtree, which threw "no such module: rtree"
+  because this machine's SQLite build has no rtree extension compiled in. Made GraphStats fields
+  nullable and per-table counts catch SQLiteException individually, so one unsupported table (rtree
+  support varies by SQLite build/Android version) degrades to null instead of blanking the whole
+  screen. Whether real Android devices hit this is unconfirmed - worth checking once this runs on
+  a device/emulator.
+- Initially set up Git LFS to commit the 222MB file (it's past GitHub's 100MB plain-git push limit),
+  but the user asked not to upload it at all - amended to gitignore app/src/main/assets/*.db instead
+  and dropped the LFS tracking. The file stays on disk locally (needed for the app to run and for
+  ad hoc verification) but isn't in git history at all.
+- Verified: ./gradlew :app:testDebugUnitTest (3/3 pass) and :app:assembleDebug both green.
