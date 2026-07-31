@@ -1,3 +1,68 @@
+2026-07-31 - Issue #4: Match route onto the map graph, with out-of-coverage detection (RouteGraphMatcher)
+- Velometrics IS on this machine after all - the user corrected me mid-task: it's a sibling of
+  AndroidStudioProjects, at C:\Users\bob22\StudioProjects\Velometrics (not inside
+  AndroidStudioProjects, which is why my first search missed it). Its `MapMatcher`/
+  `RTreeSpatialIndex`/`GeoUtils`/`PolylineDecoder` are real, working, tested code - not just prose
+  in the PRD - so this was a faithful port, not a from-scratch design, once found. Worth checking
+  StudioProjects (not just AndroidStudioProjects) up front next time a "port from Velometrics" issue
+  comes up, rather than concluding it's unavailable from one missed directory.
+- RouteGraphMatcher (domain/matching) ports MapMatcher's algorithm near-verbatim: greedy nearest-edge
+  snapping via a real bulk-loaded R-tree (RTreeSpatialIndex, com.github.davidmoten:rtree2:0.9.3 -
+  same library/version Velometrics uses, added as a new dependency), heading-based rejection of
+  perpendicular spurs/reverse twins (+/-45deg), anchor-by-point-count pruning (min 2 points),
+  bounded local-adjacency BFS gap repair (depth 6, with the U-turn-retry special case), and
+  iterative degree-1 leaf pruning that protects the track's own start/end nodes. Kept
+  matchTrackChunked's 5km-chunk design (Velometrics built this specifically for .gpx import) instead
+  of the single-shot matchTrack clustering uses, since a single unmatched stretch shouldn't blank the
+  whole result - directly satisfies the issue's "partial coverage reports an accurate percentage"
+  criterion. Dropped the Region-reuse-across-many-tracks abstraction (clustering-only concern, not
+  needed for one imported route at a time).
+- What's new (no Velometrics equivalent): MatchResult.OutsideCoverage. Velometrics' matchTrack just
+  returns null on any failure; this issue explicitly wants "outside covered territory" distinguished
+  from "matched, but low coverage" in the UI. Implemented as a cheap pre-check (bundled graph's own
+  metadata bbox vs. the track's bbox, via a new GraphAssetRepository.getBounds()) before touching the
+  526K-edge graph at all, plus a second check for "in-region but nothing nearby snapped."
+- GraphAssetRepository gained getEdgesNear/getNodesNear/getTurnsNear, mirroring Velometrics'
+  MapEdgeDao/MapNodeDao/MapTurnDao raw SQL exactly (edges: OR across both endpoints' bboxes, not AND,
+  so boundary-crossing edges aren't dropped; turns: join on junction_node). Domain models (GraphEdge,
+  GraphTurn) are lean - only the columns matching actually needs (fromNode/toNode/lengthM/highway/
+  name/isTraversed/geometryEncoded) - Velometrics' MapEdge carries a lot of speed/power percentile
+  fields that turn out to live in map_edges' `metadata` JSON blob column in the real export, not
+  separate SQL columns; left for whichever future scoring issue (DurationEstimate etc.) actually
+  needs them.
+- One real bug the port surfaced: Velometrics reuses its 20m snap radius as the DB-slice load buffer
+  too (computeBoundingBox(points, INTERVAL_EDGE_SNAP_RADIUS_M)). That's tight enough that a graph node
+  can legitimately fall just outside the loaded slice when a GPS sample doesn't land within 20m of it
+  - and since these fixture edges use empty geometryEncoded (falling back to node-coordinate geometry),
+  a missing endpoint node corrupts that edge to a degenerate (0,0) bounding box, breaking snapping
+  entirely. Fixed by splitting the buffer: kept EDGE_SNAP_RADIUS_M=20 exactly for the per-point RTree
+  query radius (drives the heading-rejection tuning, must match Velometrics), added a separate, more
+  generous REGION_LOAD_BUFFER_M=200 just for the DB-slice window. Caught by the very first ported test
+  failing, not by inspection - worth remembering that Velometrics' own test suite never hits this
+  because its unit tests use a fake repository that ignores bbox args entirely and returns everything.
+- Tests: ported all 8 MapMatcherTest scenarios (clean chain, gap repair, perpendicular-spur rejection,
+  single-point lateral spur, anchor-floor bridge restoration, fork disambiguation by point-count,
+  out-and-back leaf peeling, disconnected-components rejection) plus both RTreeSpatialIndexTest cases,
+  swapped from Velometrics' fake in-memory MapGraphRepository onto a real SQLite fixture through
+  GraphAssetRepository (same swap GraphAssetRepositoryTest made for issue #2). Added new tests for the
+  three OutsideCoverage paths (bbox-disjoint, in-bbox-but-no-nearby-roads, and disconnected-components
+  now resolving to OutsideCoverage rather than Velometrics' bare null) and one partial-coverage test
+  asserting an accurate sub-100% percentage. RouteShapeDiagnosisHarness (also mentioned in the issue)
+  turned out to be about route *generation*, not matching - explicitly out of scope per the PRD, so
+  nothing was ported from it.
+  14/14 new matching tests pass, 38/38 total (./gradlew :app:testDebugUnitTest) and :app:assembleDebug
+  both green.
+- Ad hoc verification against the real 222MB cycling_graph.db (not committed, same pattern as issue
+  #2): a real 11-node chain walked from the actual edges table matched at 100% coverage with correct
+  turns resolved, and a track near lat 48.0 (well south of the real bbox) correctly came back
+  OutsideCoverage.
+- UI: GpxImportScreen now auto-matches once a track loads, showing "Matching..." -> coverage % or a
+  red "Outside covered territory: <reason>" message. TrackMapView gained an optional matchedSegments
+  param, drawing each matched edge's own decoded polyline in green over the raw blue track -
+  deliberately NOT stitched into one direction-corrected path (matchedRouteSegments in
+  domain/matching): a plain stroke looks identical regardless of which end an edge's geometry decodes
+  from, so resolving travel direction here would have been pure wasted complexity.
+
 2026-07-31 - Issue #3: Import a .gpx file (file picker + share sheet)
 - GpxImportService (data/gpx) wraps ContentResolver.openInputStream + GpxParser.parse behind one
   suspend call, shared by both entry points named in the issue.

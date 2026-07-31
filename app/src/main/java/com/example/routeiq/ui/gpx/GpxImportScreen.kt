@@ -19,9 +19,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.routeiq.data.graph.GraphAssetRepository
+import com.example.routeiq.data.graph.GraphDatabase
 import com.example.routeiq.data.gpx.GpxImportService
+import com.example.routeiq.domain.matching.MatchResult
+import com.example.routeiq.domain.matching.RouteGraphMatcher
+import com.example.routeiq.domain.matching.matchedRouteSegments
 import com.example.routeiq.domain.model.GpxTrack
 import kotlinx.coroutines.launch
 
@@ -32,11 +38,22 @@ private sealed interface GpxImportUiState {
     data class Error(val message: String) : GpxImportUiState
 }
 
+/** Matching runs automatically once a track loads (issue #4) - a separate state so import errors and match errors don't collide. */
+private sealed interface MatchUiState {
+    data object Matching : MatchUiState
+    data class Matched(val result: MatchResult.Matched) : MatchUiState
+    data class OutsideCoverage(val reason: String) : MatchUiState
+    data class Error(val message: String) : MatchUiState
+}
+
 /**
  * Lets the rider bring a `.gpx` route into Route IQ via a manual file picker, or via [incomingUri]
  * when the file arrived through the Android share sheet (see `MainActivity`'s intent handling).
  * Renders the parsed track on [TrackMapView] once loaded, so the import pipeline is verifiable
- * end-to-end ahead of any scoring work.
+ * end-to-end ahead of any scoring work. Once loaded, the track is automatically matched against
+ * the bundled map graph ([RouteGraphMatcher]) - the matched route is drawn distinctly on the map,
+ * and a route outside the graph's covered territory is called out explicitly rather than showing
+ * an empty or misleading score (issue #4's acceptance criteria).
  */
 @Composable
 fun GpxImportScreen(
@@ -47,9 +64,12 @@ fun GpxImportScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var uiState by remember { mutableStateOf<GpxImportUiState>(GpxImportUiState.Idle) }
+    var matchState by remember { mutableStateOf<MatchUiState?>(null) }
+    val matcher = remember { RouteGraphMatcher(GraphAssetRepository(GraphDatabase.getInstance(context).graphAssetDao())) }
 
     fun importUri(uri: Uri) {
         uiState = GpxImportUiState.Loading
+        matchState = null
         scope.launch {
             val service = GpxImportService(context.contentResolver)
             uiState = service.import(uri).fold(
@@ -63,6 +83,20 @@ fun GpxImportScreen(
         incomingUri?.let {
             importUri(it)
             onIncomingUriConsumed()
+        }
+    }
+
+    val loadedTrack = (uiState as? GpxImportUiState.Loaded)?.track
+    LaunchedEffect(loadedTrack) {
+        val track = loadedTrack ?: return@LaunchedEffect
+        matchState = MatchUiState.Matching
+        matchState = try {
+            when (val result = matcher.match(track)) {
+                is MatchResult.Matched -> MatchUiState.Matched(result)
+                is MatchResult.OutsideCoverage -> MatchUiState.OutsideCoverage(result.reason)
+            }
+        } catch (e: Exception) {
+            MatchUiState.Error(e.message ?: e.toString())
         }
     }
 
@@ -82,16 +116,26 @@ fun GpxImportScreen(
             is GpxImportUiState.Idle -> Text("No route loaded yet.")
             is GpxImportUiState.Loading -> CircularProgressIndicator()
             is GpxImportUiState.Error -> Text("Couldn't import: ${state.message}")
-            is GpxImportUiState.Loaded -> GpxTrackSummary(state.track)
+            is GpxImportUiState.Loaded -> GpxTrackSummary(state.track, matchState)
         }
     }
 }
 
 @Composable
-private fun GpxTrackSummary(track: GpxTrack) {
+private fun GpxTrackSummary(track: GpxTrack, matchState: MatchUiState?) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(track.name ?: "(unnamed route)")
         Text("${track.points.size} points")
-        TrackMapView(points = track.points, modifier = Modifier.fillMaxWidth())
+        when (matchState) {
+            null, is MatchUiState.Matching -> Text("Matching route to the map graph…")
+            is MatchUiState.Error -> Text("Couldn't match route: ${matchState.message}")
+            is MatchUiState.OutsideCoverage -> Text(
+                "Outside covered territory: ${matchState.reason}",
+                color = Color(0xFFB00020),
+            )
+            is MatchUiState.Matched -> Text("Matched to map graph: ${matchState.result.coveragePercent}% of the route covered")
+        }
+        val matchedSegments = (matchState as? MatchUiState.Matched)?.result?.matchedEdges?.let(::matchedRouteSegments)
+        TrackMapView(points = track.points, modifier = Modifier.fillMaxWidth(), matchedSegments = matchedSegments)
     }
 }

@@ -18,18 +18,27 @@ import kotlin.math.max
  * Minimal offline route view: projects the track's lat/lon onto a 2D canvas and draws it as a
  * polyline, scaled to fit. No basemap tiles - just enough to verify the import pipeline renders
  * end-to-end (points + shape) without pulling in a map-tile dependency for v1.
+ *
+ * [matchedSegments] - one point-list per [RouteGraphMatcher][com.example.routeiq.domain.matching.RouteGraphMatcher]-matched
+ * edge, from [com.example.routeiq.domain.matching.matchedRouteSegments] - draws the matched route
+ * distinctly (thicker, green) on top of the raw track, per issue #4's map acceptance criterion.
  */
 @Composable
-fun TrackMapView(points: List<GeoPoint>, modifier: Modifier = Modifier) {
+fun TrackMapView(
+    points: List<GeoPoint>,
+    modifier: Modifier = Modifier,
+    matchedSegments: List<List<GeoPoint>>? = null,
+) {
     if (points.size < 2) {
         Text("Not enough points to render a track")
         return
     }
 
-    val minLat = points.minOf { it.latitude }
-    val maxLat = points.maxOf { it.latitude }
-    val minLon = points.minOf { it.longitude }
-    val maxLon = points.maxOf { it.longitude }
+    val framePoints = points + matchedSegments.orEmpty().flatten()
+    val minLat = framePoints.minOf { it.latitude }
+    val maxLat = framePoints.maxOf { it.latitude }
+    val minLon = framePoints.minOf { it.longitude }
+    val maxLon = framePoints.maxOf { it.longitude }
     // Longitude degrees shrink toward the poles - correct for that so the track isn't stretched.
     val lonScale = cos(Math.toRadians((minLat + maxLat) / 2.0))
     val span = max(max((maxLon - minLon) * lonScale, maxLat - minLat), MIN_SPAN_DEGREES)
@@ -44,15 +53,21 @@ fun TrackMapView(points: List<GeoPoint>, modifier: Modifier = Modifier) {
             return Offset(x.toFloat(), y.toFloat())
         }
 
-        val path = Path().apply {
-            val start = toOffset(points.first())
+        fun pathFor(segment: List<GeoPoint>): Path = Path().apply {
+            val start = toOffset(segment.first())
             moveTo(start.x, start.y)
-            for (p in points.drop(1)) {
+            for (p in segment.drop(1)) {
                 val o = toOffset(p)
                 lineTo(o.x, o.y)
             }
         }
-        drawPath(path, color = Color(0xFF1976D2), style = Stroke(width = 4f))
+
+        drawPath(pathFor(points), color = Color(0xFF1976D2), style = Stroke(width = 4f))
+        matchedSegments?.forEach { segment ->
+            if (segment.size >= 2) {
+                drawPath(pathFor(segment), color = Color(0xFF2E7D32), style = Stroke(width = 6f))
+            }
+        }
     }
 }
 
