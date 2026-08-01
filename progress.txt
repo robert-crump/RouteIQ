@@ -1,3 +1,79 @@
+2026-08-01 - Issue #6: Fueling score: flag resupply-sparse segments (FuelingScore)
+- Labeled ready-for-human, not ready-for-agent - proceeded anyway per explicit user instruction
+  (combined /next-issue + /grill-me on issue #6), same precedent as issue #5. Ran a full /grill-me
+  session before writing code, since the issue's own acceptance criteria calls for one to resolve
+  bucket size, sparse-vs-dense thresholds, and score normalization.
+- Key /grill-me resolutions (many diverge from the literal issue text and from Velometrics'
+  PoiDensitySection precedent - all deliberate, confirmed with the user):
+  - Buckets against the raw GpxTrack.points, not RouteGraphMatcher's matched edges, despite the
+    issue saying "along the matched track" - a resupply gap is a fixed physical distance regardless
+    of graph coverage. Still gated on a successful match first (same as DiscoveryScore), so
+    OutsideCoverage stays distinct from "scored and sparse."
+  - Two independent, inclusive POI-distance corridors per bucket: on-route (100m) and with-detour
+    (500m, includes the on-route ones). Only the 100m corridor drives the score; the 500m corridor
+    is secondary context on the same card, per the user's explicit "one card, two figures" call -
+    no RouteRatingEngine-per-corridor split.
+  - Fixed 5km buckets (not Velometrics' adaptive poiDensityBucketSizeM, which targets ~10 bars for
+    the UI - wrong optimization target for a physical-distance risk score). Category filter:
+    restaurant/fast_food/cafe/bakery/drinking_water/vending_machine/fuel - excludes bicycle (repair,
+    not resupply). Thresholds reused from Velometrics unmodified: 0 sparse, 1-5 borderline, 6+ dense.
+  - New: 3+ consecutive sparse buckets (15km+) escalate to an "extended gap" flag, with a textual
+    warning listing the gap km-ranges - no Velometrics precedent, added because a single fixed
+    bucket size can't by itself distinguish "one unlucky empty bin" from "a real 20km dead zone."
+  - Score direction inverted from DiscoveryScore's convention: higher = better supplied (100 minus
+    the length-weighted % of the route in sparse buckets), because "fueling score" reads more
+    naturally as bigger-is-better than DiscoveryScore's "higher = more of the concerning thing."
+    FuelingBucket (Poor/Risky/Adequate/Well-fueled) mirrors DiscoveryBucket's 4-tier shape.
+  - Map: 2-tone overlay (flagged red vs. normal), extended-gap stretches drawn heavier rather than a
+    new color - kept simple per the user's choice over 3-/4-tone options. A "Max. detour" toggle
+    (On-route / With 500m detour) switches which corridor's sparse/gap ranges the map and warning
+    text are drawn from; the score number itself never changes with the toggle.
+  - Still a standalone domain/scoring object next to DiscoveryScore, not a RouteRatingEngine scaffold
+    - explicitly re-litigated since this is the "2nd sub-score" issue #5's progress note said would
+      trigger that decision, and the user chose to defer it again.
+- New domain/model/Poi.kt (poiId/name/category/cuisine/location/openingHours) and
+  GraphAssetRepository.getPoisNear(box), querying the real pois columns (poi_id/name/category/
+  cuisine/lat/lon/opening_hours) - confirmed against the actual bundled cycling_graph.db via a
+  one-off python sqlite3 read (not committed): 24,705 POIs across 8 categories (restaurant 10137,
+  fast_food 4968, cafe 3037, bakery 2803, fuel 2193, bicycle 748, drinking_water 607,
+  vending_machine 212). GraphAssetRepositoryTest's pois fixture table was widened from its old
+  generic (id, lat, lon, category) shape to the real column set to cover getPoisNear.
+- GeoUtils gained projectOntoSegment(point, segStart, segEnd) - fraction + perpendicular distance,
+  same equirectangular math as the existing pointToSegmentDistance but also returning the fraction
+  (needed to place a POI's along-track distance). Deliberately duplicated rather than refactoring
+  pointToSegmentDistance to share it, to avoid touching RouteGraphMatcher's hot-path matching code
+  for an unrelated feature.
+- FuelingScore.compute(points, pois) projects each resupply-category POI onto the raw track (nearest
+  segment, no RTree - POI counts near one imported route are small enough that an O(points x pois)
+  scan is fine, no precedent for TrackIndex-style optimization needed here), buckets both corridor
+  tiers, and returns per-corridor CorridorResult (counts/severities/sparseRanges/extendedGaps) plus
+  the overall score. fuelingGapSegments(points, ranges) slices the raw track's point list by
+  cumulative distance for the map overlay, independent of FuelingScore itself.
+- UI: GpxImportScreen now runs a fueling POI fetch+score in a LaunchedEffect keyed on a successful
+  match (own FuelingUiState, since it's async unlike DiscoveryScore's synchronous compute). New
+  FuelingScoreCard shows the score/label, the "Max. detour" toggle, and the extended-gap warning
+  text for whichever corridor is selected. TrackMapView gained fuelingSparseSegments/
+  fuelingExtendedGapSegments params (red, heavier stroke for extended gaps).
+- Test fixture bug worth remembering: building synthetic GPX tracks by placing points via
+  GeoUtils.metersToLon/metersToLat at exact intended distances does NOT make
+  GeoUtils.haversineDistance between them equal those distances exactly - haversine (great-circle)
+  drifts from the flat/equirectangular conversion by ~0.1-0.2% over multi-km spans. Placing test POIs
+  exactly at intended bucket *boundaries* (e.g. distance 10000 for a 5km-bucket edge) is the worst
+  case - the drift alone was enough to shift several POIs into the wrong bucket, breaking 4 tests
+  that looked like production bugs but weren't. Fixed by placing test POIs at bucket *midpoints*
+  instead (ample margin from any boundary), and choosing bucket-length-ratio test values with a wide
+  rounding margin (e.g. exactly 20% risk share, not 28.57%) so the same drift can't flip a
+  round-to-nearest-int score by 1.
+- Tests: 21 new (FuelingScoreTest: empty input, POI-dense/POI-sparse per the acceptance criteria,
+  category filtering, on-route/detour corridor tiers and their inclusion rule, extended-gap
+  detection at the 3-bucket threshold and its 2-bucket non-trigger, partial-final-bucket length
+  weighting, FuelingBucket's four-tier boundaries; GraphAssetRepositoryTest: getPoisNear column
+  mapping and box filtering). 57/57 total (./gradlew :app:testDebugUnitTest) and :app:assembleDebug
+  both green.
+- No adb/emulator available in this environment (same recurring limitation as issues #3-#5) - the
+  fueling card, toggle, and map overlay are unverified on-device; rests on the unit tests +
+  assembleDebug above.
+
 2026-08-01 - Issue #5: Discovery score: flag undiscovered road segments (DiscoveryScore)
 - Labeled ready-for-human, not ready-for-agent - proceeded anyway per explicit user instruction to
   work this issue, since the issue itself calls for a /grill-me session on open design questions

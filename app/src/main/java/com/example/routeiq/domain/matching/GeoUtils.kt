@@ -72,6 +72,26 @@ object GeoUtils {
         return sqrt(ddx * ddx + ddy * ddy)
     }
 
+    /**
+     * Fraction [0,1] along the segment [segStart]-[segEnd] closest to [point], and the perpendicular
+     * distance to that closest point, in meters. Same local equirectangular projection as
+     * [pointToSegmentDistance] (accurate for short segments), duplicated rather than shared so that
+     * function's matching-critical callers aren't touched by this - [FuelingScore][com.example.routeiq.domain.scoring.FuelingScore]
+     * needs the fraction too, to place a POI's along-track distance, not just its distance off the track.
+     */
+    fun projectOntoSegment(point: GeoPoint, segStart: GeoPoint, segEnd: GeoPoint): Pair<Double, Double> {
+        val mPerLon = metersPerDegLon(segStart.latitude)
+        val px = (point.longitude - segStart.longitude) * mPerLon
+        val py = (point.latitude - segStart.latitude) * METERS_PER_DEG_LAT
+        val dx = (segEnd.longitude - segStart.longitude) * mPerLon
+        val dy = (segEnd.latitude - segStart.latitude) * METERS_PER_DEG_LAT
+        val lenSq = dx * dx + dy * dy
+        val t = if (lenSq == 0.0) 0.0 else ((px * dx + py * dy) / lenSq).coerceIn(0.0, 1.0)
+        val ddx = px - t * dx
+        val ddy = py - t * dy
+        return t to sqrt(ddx * ddx + ddy * ddy)
+    }
+
     /** Smallest angular difference between two bearings, in [0, 180]. */
     fun bearingDifference(a: Double, b: Double): Double {
         val diff = abs(a - b) % 360

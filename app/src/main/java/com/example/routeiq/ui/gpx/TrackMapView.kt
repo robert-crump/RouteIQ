@@ -24,7 +24,9 @@ import kotlin.math.max
  * draws the matched route distinctly (thicker, green) on top of the raw track, per issue #4's map
  * acceptance criterion. [undiscoveredSegments] is the same shape but for matched edges with
  * `isTraversed == false`, drawn gray instead of green so undiscovered stretches read distinctly
- * from both the raw track and the rest of the matched route (issue #5).
+ * from both the raw track and the rest of the matched route (issue #5). [fuelingSparseSegments] /
+ * [fuelingExtendedGapSegments] (issue #6, from [com.example.routeiq.domain.scoring.fuelingGapSegments])
+ * highlight POI-sparse stretches of the raw track in red, with extended (15km+) gaps drawn heavier.
  */
 @Composable
 fun TrackMapView(
@@ -32,6 +34,8 @@ fun TrackMapView(
     modifier: Modifier = Modifier,
     matchedSegments: List<List<GeoPoint>>? = null,
     undiscoveredSegments: List<List<GeoPoint>>? = null,
+    fuelingSparseSegments: List<List<GeoPoint>>? = null,
+    fuelingExtendedGapSegments: List<List<GeoPoint>>? = null,
 ) {
     if (points.size < 2) {
         Text("Not enough points to render a track")
@@ -75,6 +79,16 @@ fun TrackMapView(
         undiscoveredSegments?.forEach { segment ->
             if (segment.size >= 2) {
                 drawPath(pathFor(segment), color = Color(0xFF757575), style = Stroke(width = 6f))
+            }
+        }
+        fuelingSparseSegments?.forEach { segment ->
+            if (segment.size >= 2) {
+                drawPath(pathFor(segment), color = Color(0xFFE53935), style = Stroke(width = 6f))
+            }
+        }
+        fuelingExtendedGapSegments?.forEach { segment ->
+            if (segment.size >= 2) {
+                drawPath(pathFor(segment), color = Color(0xFFE53935), style = Stroke(width = 9f))
             }
         }
     }

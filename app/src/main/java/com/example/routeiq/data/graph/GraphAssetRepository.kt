@@ -9,6 +9,7 @@ import com.example.routeiq.domain.model.GeoPoint
 import com.example.routeiq.domain.model.GraphEdge
 import com.example.routeiq.domain.model.GraphNode
 import com.example.routeiq.domain.model.GraphTurn
+import com.example.routeiq.domain.model.Poi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -166,6 +167,28 @@ class GraphAssetRepository(private val dao: GraphAssetDao) {
                             brakingProbability = cursor.getDoubleOrNull(7),
                             medianKeDelta = cursor.getDoubleOrNull(8),
                             stopPenaltyConfidence = cursor.getDoubleOrNull(9),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    /** POIs whose coordinates fall inside [box] - mirrors [getNodesNear]'s plain range query. */
+    suspend fun getPoisNear(box: BoundingBox): List<Poi> = withContext(Dispatchers.IO) {
+        val sql = "SELECT poi_id, name, category, cuisine, lat, lon, opening_hours " +
+            "FROM ${GraphTable.POIS.tableName} WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?"
+        dao.rawQuery(SimpleSQLiteQuery(sql, arrayOf(box.minLat, box.maxLat, box.minLon, box.maxLon))).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        Poi(
+                            poiId = cursor.getString(0),
+                            name = cursor.getStringOrNull(1),
+                            category = cursor.getString(2),
+                            cuisine = cursor.getStringOrNull(3),
+                            location = GeoPoint(cursor.getDouble(4), cursor.getDouble(5)),
+                            openingHours = cursor.getStringOrNull(6),
                         ),
                     )
                 }
