@@ -116,7 +116,7 @@ class GraphAssetRepository(private val dao: GraphAssetDao) {
      */
     suspend fun getEdgesNear(box: BoundingBox): List<GraphEdge> = withContext(Dispatchers.IO) {
         val sql = """
-            SELECT e.from_node, e.to_node, e.length_m, e.highway, e.name, e.is_traversed, e.geometry_encoded
+            SELECT e.from_node, e.to_node, e.length_m, e.highway, e.name, e.is_traversed, e.geometry_encoded, e.slope_percent
             FROM ${GraphTable.MAP_EDGES.tableName} e
             INNER JOIN ${GraphTable.MAP_NODES.tableName} nf ON e.from_node = nf.id
             INNER JOIN ${GraphTable.MAP_NODES.tableName} nt ON e.to_node = nt.id
@@ -136,6 +136,7 @@ class GraphAssetRepository(private val dao: GraphAssetDao) {
                             name = cursor.getStringOrNull(4),
                             isTraversed = cursor.getInt(5) != 0,
                             geometryEncoded = cursor.getStringOrNull(6),
+                            slopePercent = cursor.getDoubleOrNull(7),
                         ),
                     )
                 }

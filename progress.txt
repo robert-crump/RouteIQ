@@ -1,3 +1,72 @@
+2026-08-01 - Issue #7: Elevation/climb score from the .gpx's own elevation data (ElevationScore)
+- Labeled ready-for-human, not ready-for-agent - proceeded anyway per explicit user instruction to
+  use "the /grill-me resolutions from the comment on issue #7", same precedent as issues #5/#6. Unlike
+  those two, the /grill-me session was already run and posted as a comment on the issue by the user in
+  an earlier session (not run fresh here) - implementation followed that comment's resolved design
+  directly rather than re-deriving it.
+- Key resolutions from that comment (diverge from the issue's literal "Score displayed" wording and
+  from Discovery/Fueling's shape - all deliberate):
+  - No map overlay, unlike Discovery/Fueling - the primary computation path (the .gpx's own <ele> data)
+    has no matched-edge dependency to key an overlay off, and the issue doesn't call for one.
+  - Primary source: the .gpx's own elevation series, smoothed via a ported Velometrics
+    smoothElevations/elevationGainLoss (point-window average; gain/loss computed on the FULL smoothed
+    point series, not resampled, so short rollers aren't undercounted).
+  - Fallback source (only when the .gpx has no <ele> data at all): the bundled graph's slope_percent
+    column on matched edges - confirmed as a real REAL column on map_edges (not in the metadata JSON
+    blob) via a one-off python sqlite3 read of the actual cycling_graph.db. This is the one path where
+    ElevationScore depends on RouteGraphMatcher; everywhere else it's match-independent per the issue's
+    acceptance criteria.
+  - Grade profile: elevation resampled into fixed ~100m segments (separate series from the gain/loss
+    point series), stable across .gpx point densities - climb detection operates on this, not the raw
+    series.
+  - Climb detection: contiguous net-ascending runs over the 100m-segment profile, tolerating dips up to
+    ~500m before ending a climb, only counted if >=1km length and >=30m gain.
+  - Climb categorization: difficulty = length_km * avg_grade^2, TdF thresholds (Cat4 <=75, Cat3 75+,
+    Cat2 150+, Cat1 300+, HC 600+) attributed to race director Thierry Gouvenou via biketips.com -
+    cross-checked against Col du Tourmalet's own worked example (18.3km x 7.7% -> 1085 -> HC).
+  - Display: TdF "stage profile"-style chart with climb-category-colored fill bands, total gain rounded
+    to the *nearest* 10m for display (the underlying Result.gainM stays precise), gain normalized per
+    100km. Deliberately NO synthesized 0-100 score - the chart + climb categories + gain figures stand
+    on their own.
+  - Timing: card renders immediately post-import when .gpx elevation exists (works even for
+    OutsideCoverage routes); only waits on match completion when the DEM fallback is needed.
+- domain/scoring/ElevationScore.kt: computeFromGpx(points, elevations) and
+  computeFromMatchedEdges(matchedEdges) both funnel into a private computeFromProfile - the DEM
+  fallback builds a synthetic RELATIVE elevation profile (arbitrary baseline) by walking matched edges
+  in order and accumulating lengthM * slopePercent/100; edges with a null slopePercent contribute zero
+  rise (treated as flat) rather than being skipped, so distance accounting stays correct. Absolute
+  elevation doesn't matter since gain/loss/climbs only look at deltas.
+- GraphEdge gained slopePercent: Double? (default null, so existing GraphEdge(...) call sites across
+  tests didn't need updating) and GraphAssetRepository.getEdgesNear now selects e.slope_percent as its
+  8th column. RouteGraphMatcherTest's map_edges fixture table/inserts were widened to include the new
+  column so getEdgesNear's SQL doesn't fail against it (GraphAssetRepositoryTest's own fixture already
+  had the column from an earlier issue and needed no change).
+- UI: GpxImportScreen computes gpxElevation eagerly (keyed on the track alone) and demElevation only
+  when gpxElevation is null and matchedEdges is available; the card shows whichever is non-null, a
+  "matching to estimate from map data" message while waiting on the fallback, or "no elevation data"
+  otherwise. ElevationProfileChart (Canvas) draws the smoothed profile line with the area beneath it
+  filled per-climb by category color (neutral gray elsewhere) - climb list below shows category/length/
+  grade/km-range/gain per climb, colored to match its category band.
+- Test fixture bug worth remembering (distinct from issue #6's haversine-drift one): the centered
+  moving-average smoothing (window 5) blends elevation across a flat/climb transition ("kink") over
+  several points on BOTH sides of it, not just the truncated-array-boundary case issue #6 hit - so a
+  climb's *detected* start/end distance is measurably fuzzier than its raw boundary even with generous
+  flat padding around the test segment (a 2000m/10%-grade climb measured back at ~2500m/8% after
+  smoothing). Padding still matters (it isolates the fuzz from array-edge truncation), but per-climb
+  grade/length assertions need a wide tolerance (~3 percentage points here) rather than exact values;
+  whole-track gain/loss stayed exact by testing with monotonic non-decreasing padded sequences, where
+  the smoothing-preserves-monotonicity property makes the sum telescope exactly regardless of internal
+  blending.
+- Tests: 11 new (ElevationScoreTest: null/empty-elevation inputs, flat/steadily-climbing/mixed-gradient
+  series per the acceptance criteria, short-dip-tolerated-vs-long-dip-splits-the-climb and
+  too-short-climbs-filtered in one combined test, computeFromMatchedEdges' slope-based accumulation and
+  null-slope-as-flat handling; ElevationScoreClimbCategoryTest: all five TdF boundary edges plus the
+  Tourmalet worked example). 76/76 total (./gradlew :app:testDebugUnitTest) and :app:assembleDebug both
+  green.
+- No adb/emulator available in this environment (same recurring limitation as issues #3-#6) - the
+  chart, climb-category coloring, and card-timing states are unverified on-device; rests on the unit
+  tests + assembleDebug above.
+
 2026-08-01 - Issue #6: Fueling score: flag resupply-sparse segments (FuelingScore)
 - Labeled ready-for-human, not ready-for-agent - proceeded anyway per explicit user instruction
   (combined /next-issue + /grill-me on issue #6), same precedent as issue #5. Ran a full /grill-me

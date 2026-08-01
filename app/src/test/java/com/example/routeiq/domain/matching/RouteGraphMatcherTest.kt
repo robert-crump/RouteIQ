@@ -79,7 +79,7 @@ class RouteGraphMatcherTest {
             db.execSQL("CREATE TABLE map_nodes (id INTEGER PRIMARY KEY, lat REAL, lon REAL)")
             db.execSQL(
                 "CREATE TABLE map_edges (from_node INTEGER, to_node INTEGER, length_m REAL, highway TEXT, " +
-                    "name TEXT, is_traversed INTEGER NOT NULL DEFAULT 0, geometry_encoded TEXT)",
+                    "name TEXT, is_traversed INTEGER NOT NULL DEFAULT 0, geometry_encoded TEXT, slope_percent REAL)",
             )
             db.execSQL(
                 "CREATE TABLE map_turns (from_node INTEGER, junction_node INTEGER, to_node INTEGER, " +
@@ -93,9 +93,9 @@ class RouteGraphMatcherTest {
             }
             for (e in edges) {
                 db.execSQL(
-                    "INSERT INTO map_edges (from_node, to_node, length_m, highway, name, is_traversed, geometry_encoded) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    arrayOf(e.fromNode, e.toNode, e.lengthM, e.highway, e.name, if (e.isTraversed) 1 else 0, e.geometryEncoded),
+                    "INSERT INTO map_edges (from_node, to_node, length_m, highway, name, is_traversed, geometry_encoded, slope_percent) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    arrayOf(e.fromNode, e.toNode, e.lengthM, e.highway, e.name, if (e.isTraversed) 1 else 0, e.geometryEncoded, e.slopePercent),
                 )
             }
             for (t in turns) {

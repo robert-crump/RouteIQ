@@ -3,11 +3,14 @@ package com.example.routeiq.ui.gpx
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -22,8 +25,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.routeiq.data.graph.GraphAssetRepository
@@ -37,9 +44,13 @@ import com.example.routeiq.domain.model.GpxTrack
 import com.example.routeiq.domain.model.GraphEdge
 import com.example.routeiq.domain.scoring.DiscoveryBucket
 import com.example.routeiq.domain.scoring.DiscoveryScore
+import com.example.routeiq.domain.scoring.ElevationScore
 import com.example.routeiq.domain.scoring.FuelingBucket
 import com.example.routeiq.domain.scoring.FuelingScore
 import com.example.routeiq.domain.scoring.fuelingGapSegments
+import java.text.NumberFormat
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
@@ -187,11 +198,166 @@ private fun GpxTrackSummary(track: GpxTrack, matchState: MatchUiState?, fuelingS
             fuelingSparseSegments = selectedCorridor?.let { fuelingGapSegments(track.points, it.sparseRanges) },
             fuelingExtendedGapSegments = selectedCorridor?.let { fuelingGapSegments(track.points, it.extendedGaps) },
         )
+        // Renders as soon as the .gpx's own <ele> data is available - no map match needed. Only
+        // when the file has no elevation data at all does it wait on matchedEdges, to fall back
+        // to the bundled graph's DEM-derived slope_percent (issue #7's resolved design).
+        val gpxElevation = remember(track) { track.elevations?.let { ElevationScore.computeFromGpx(track.points, it) } }
+        val demElevation = remember(gpxElevation, matchedEdges) {
+            if (gpxElevation == null) matchedEdges?.let { ElevationScore.computeFromMatchedEdges(it) } else null
+        }
+        ElevationScoreCard(
+            elevationResult = gpxElevation ?: demElevation,
+            waitingForMatch = gpxElevation == null && demElevation == null && (matchState == null || matchState is MatchUiState.Matching),
+        )
         if (matchedEdges != null) {
             DiscoveryScoreCard(matchedEdges)
         }
         if (fuelingState != null) {
             FuelingScoreCard(fuelingState, useDetourCorridor, onUseDetourCorridorChange = { useDetourCorridor = it })
+        }
+    }
+}
+
+@Composable
+private fun ElevationScoreCard(elevationResult: ElevationScore.Result?, waitingForMatch: Boolean) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Elevation profile", style = MaterialTheme.typography.titleMedium)
+            when {
+                elevationResult != null -> {
+                    ElevationProfileChart(elevationResult)
+                    val numberFormat = remember { NumberFormat.getIntegerInstance() }
+                    val gainRoundedTo10m = ((elevationResult.gainM / 10.0).roundToInt() * 10)
+                    Text(
+                        "Up: ${numberFormat.format(gainRoundedTo10m)}m, Down: ${numberFormat.format(elevationResult.lossM)}m, " +
+                            "Per 100km: ${numberFormat.format(elevationResult.gainPer100km)}m",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    if (elevationResult.source == ElevationScore.Source.DEM_FALLBACK) {
+                        Text(
+                            "This file has no elevation data - estimated from the map's elevation data instead.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    elevationResult.climbs.forEach { climb ->
+                        val lengthKm = (climb.endM - climb.startM) / 1000.0
+                        Text(
+                            "${climb.category.label}: %.1f km at %.1f%% (%.1f-%.1f km, +%.0fm)".format(
+                                lengthKm, climb.avgGradePercent, climb.startM / 1000.0, climb.endM / 1000.0, climb.gainM,
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = climbCategoryColor(climb.category),
+                        )
+                    }
+                }
+                waitingForMatch -> Text(
+                    "Matching route to estimate elevation from map data…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                else -> Text(
+                    "No elevation data available for this route",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** "Nice" elevation axis steps, smallest first - ported from Velometrics' `GpxAnalysisUtils`. */
+private val ELEVATION_AXIS_STEPS_M = listOf(50.0, 100.0, 200.0, 500.0)
+private const val ELEVATION_AXIS_MAX_TICKS = 6
+
+private fun elevationAxisStep(minEle: Double, maxEle: Double): Double {
+    for (step in ELEVATION_AXIS_STEPS_M) {
+        val axisMin = floor(minEle / step) * step
+        val rawMax = ceil(maxEle / step) * step
+        val axisMax = if (rawMax <= axisMin) axisMin + step else rawMax
+        val tickCount = ((axisMax - axisMin) / step).roundToInt() + 1
+        if (tickCount <= ELEVATION_AXIS_MAX_TICKS) return step
+    }
+    return ELEVATION_AXIS_STEPS_M.last()
+}
+
+/** TdF-inspired climb-category colors (green -> purple, easy -> hardest), distinct from the primary line color. */
+private fun climbCategoryColor(category: ElevationScore.ClimbCategory): Color = when (category) {
+    ElevationScore.ClimbCategory.CAT_4 -> Color(0xFF4CAF50)
+    ElevationScore.ClimbCategory.CAT_3 -> Color(0xFF2196F3)
+    ElevationScore.ClimbCategory.CAT_2 -> Color(0xFFFF9800)
+    ElevationScore.ClimbCategory.CAT_1 -> Color(0xFFE53935)
+    ElevationScore.ClimbCategory.HC -> Color(0xFF6A1B9A)
+}
+
+/**
+ * A TdF "stage profile"-style chart: the smoothed elevation line, with the filled area beneath it
+ * colored by climb category over each detected climb's distance range (neutral gray elsewhere).
+ */
+@Composable
+private fun ElevationProfileChart(result: ElevationScore.Result) {
+    val profile = result.profile
+    val minEle = profile.minOf { it.second }
+    val maxEle = profile.maxOf { it.second }
+    val axisStep = elevationAxisStep(minEle, maxEle)
+    val axisMin = floor(minEle / axisStep) * axisStep
+    val axisMax = (ceil(maxEle / axisStep) * axisStep).let { if (it <= axisMin) axisMin + axisStep else it }
+    val axisRange = (axisMax - axisMin).coerceAtLeast(1.0)
+    val maxDistance = profile.last().first.coerceAtLeast(1.0)
+    val axisTickCount = ((axisMax - axisMin) / axisStep).roundToInt() + 1
+    val axisLabels = remember(axisMin, axisMax, axisStep) { (0 until axisTickCount).map { i -> (axisMax - axisStep * i).roundToInt() } }
+    val numberFormat = remember { NumberFormat.getIntegerInstance() }
+    val lineColor = MaterialTheme.colorScheme.primary
+    val neutralFillColor = MaterialTheme.colorScheme.surfaceVariant
+    val referenceLineColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val climbColors = result.climbs.map { climbCategoryColor(it.category) }
+
+    Row(modifier = Modifier.fillMaxWidth().height(140.dp)) {
+        Column(
+            modifier = Modifier.fillMaxHeight().padding(end = 4.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            axisLabels.forEach { label ->
+                Text(text = numberFormat.format(label), style = MaterialTheme.typography.labelSmall, color = referenceLineColor)
+            }
+        }
+        Canvas(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            fun xFor(distanceM: Double) = (distanceM / maxDistance).toFloat() * size.width
+            fun yFor(elevationM: Double) = size.height - ((elevationM - axisMin) / axisRange).toFloat() * size.height
+
+            axisLabels.forEach { label ->
+                val y = yFor(label.toDouble())
+                drawLine(referenceLineColor.copy(alpha = 0.3f), Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
+            }
+
+            fun fillPath(startM: Double, endM: Double): Path {
+                val path = Path()
+                val points = profile.filter { it.first in startM..endM }
+                if (points.isEmpty()) return path
+                path.moveTo(xFor(startM), size.height)
+                path.lineTo(xFor(points.first().first), yFor(points.first().second))
+                points.forEach { (d, e) -> path.lineTo(xFor(d), yFor(e)) }
+                path.lineTo(xFor(endM), size.height)
+                path.close()
+                return path
+            }
+
+            var cursorM = 0.0
+            result.climbs.forEachIndexed { i, climb ->
+                if (climb.startM > cursorM) drawPath(fillPath(cursorM, climb.startM), color = neutralFillColor)
+                drawPath(fillPath(climb.startM, climb.endM), color = climbColors[i].copy(alpha = 0.5f))
+                cursorM = climb.endM
+            }
+            if (cursorM < maxDistance) drawPath(fillPath(cursorM, maxDistance), color = neutralFillColor)
+
+            val path = Path()
+            profile.forEachIndexed { index, (d, e) ->
+                val x = xFor(d)
+                val y = yFor(e)
+                if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            drawPath(path = path, color = lineColor, style = Stroke(width = 2.dp.toPx()))
         }
     }
 }
