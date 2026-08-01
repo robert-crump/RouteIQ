@@ -1,3 +1,44 @@
+2026-08-01 - Issue #5: Discovery score: flag undiscovered road segments (DiscoveryScore)
+- Labeled ready-for-human, not ready-for-agent - proceeded anyway per explicit user instruction to
+  work this issue, since the issue itself calls for a /grill-me session on open design questions
+  before implementation, which is exactly what the user asked for up front. Its blocker (#4, route
+  matching) was already done.
+- Ran a full /grill-me session before writing code. Key resolution: Velometrics' real
+  `GpxAnalysisUtils.discoveryScore(matchedEdges, surrogates)` takes a `surrogates` param, but digging
+  into `findSurrogatesForMatchedEdges` showed it's not a discovery-specific concept at all - the
+  trigger condition is `!isTraversed || speedMean == null || powerMean == null`, i.e. it exists to
+  serve the *speed/power estimate* feature (borrowing ride-history from a nearby parallel road when
+  an edge lacks that metadata), and discovery score just happens to reuse the resulting map. Route
+  IQ's GraphEdge doesn't carry speedMean/powerMean at all yet (deliberately deferred to the future
+  DurationEstimate issue per issue #2's progress note). Decided to skip surrogates entirely for this
+  issue - DiscoveryScore.compute(edges) is a pure is_traversed check, faithful to issue #5's literal
+  acceptance criteria - and revisit whether discovery should consume DurationEstimate's surrogate map
+  once that issue actually builds the metadata parsing + RTree corridor search it needs. Avoided
+  building corridor-search infrastructure ahead of the feature that actually motivates it.
+- Other /grill-me resolutions: DiscoveryScore ships as a standalone domain/scoring function, not a
+  RouteRatingEngine scaffold (defer that abstraction until a 2nd sub-score exists to justify its
+  shape). Presentation is raw % plus a 4-tier bucket label (Familiar 0-24 / Some new 25-49 / Mostly
+  new 50-74 / All new 75-100 - no existing precedent, picked fresh). Result typing is a pure function
+  over List<GraphEdge> (null for empty/zero-length), with OutsideCoverage/Matching/Error handled by
+  GpxImportScreen's existing MatchUiState rather than DiscoveryScore reinventing that distinction -
+  same layering Velometrics used. Map: TrackMapView's matched-route overlay is now two-toned by
+  isTraversed - previously-ridden edges stay green, undiscovered edges draw gray (0xFF757575) at the
+  same thick stroke, added as a new undiscoveredSegments param alongside the existing matchedSegments
+  one, both built via the same matchedRouteSegments(edges) helper from issue #4 just called on a
+  filtered/partitioned edge list. Card placement: below TrackMapView, shown once matched, as its own
+  Card (title "Discovery score") - the existing coverage-% status line is left alone since it's about
+  matching, not scoring.
+- domain/scoring/DiscoveryScore.kt: DiscoveryScore.compute(matchedEdges) (length-weighted % where
+  isTraversed == false) plus DiscoveryBucket enum for the qualitative label. New domain/scoring
+  package, parallel to domain/matching.
+- Tests: DiscoveryScoreTest mirrors Velometrics' GpxAnalysisUtilsTest discovery cases exactly (empty
+  -> null, all-traversed -> 0, all-untraversed -> 100, mixed -> length-weighted %), plus a
+  zero-total-length case and DiscoveryBucketTest covering all four boundary edges. 6 new tests,
+  44/44 total (./gradlew :app:testDebugUnitTest) and :app:assembleDebug both green.
+- No adb/emulator available in this environment (same limitation noted in issue #3's entry) - couldn't
+  do an on-device visual check of the new card or the two-toned map overlay. Verification rests on
+  the unit tests + assembleDebug above.
+
 2026-07-31 - Issue #4: Match route onto the map graph, with out-of-coverage detection (RouteGraphMatcher)
 - Velometrics IS on this machine after all - the user corrected me mid-task: it's a sibling of
   AndroidStudioProjects, at C:\Users\bob22\StudioProjects\Velometrics (not inside

@@ -19,22 +19,26 @@ import kotlin.math.max
  * polyline, scaled to fit. No basemap tiles - just enough to verify the import pipeline renders
  * end-to-end (points + shape) without pulling in a map-tile dependency for v1.
  *
- * [matchedSegments] - one point-list per [RouteGraphMatcher][com.example.routeiq.domain.matching.RouteGraphMatcher]-matched
- * edge, from [com.example.routeiq.domain.matching.matchedRouteSegments] - draws the matched route
- * distinctly (thicker, green) on top of the raw track, per issue #4's map acceptance criterion.
+ * [matchedSegments] - one point-list per [RouteGraphMatcher][com.example.routeiq.domain.matching.RouteGraphMatcher]-matched,
+ * previously-traversed edge, from [com.example.routeiq.domain.matching.matchedRouteSegments] -
+ * draws the matched route distinctly (thicker, green) on top of the raw track, per issue #4's map
+ * acceptance criterion. [undiscoveredSegments] is the same shape but for matched edges with
+ * `isTraversed == false`, drawn gray instead of green so undiscovered stretches read distinctly
+ * from both the raw track and the rest of the matched route (issue #5).
  */
 @Composable
 fun TrackMapView(
     points: List<GeoPoint>,
     modifier: Modifier = Modifier,
     matchedSegments: List<List<GeoPoint>>? = null,
+    undiscoveredSegments: List<List<GeoPoint>>? = null,
 ) {
     if (points.size < 2) {
         Text("Not enough points to render a track")
         return
     }
 
-    val framePoints = points + matchedSegments.orEmpty().flatten()
+    val framePoints = points + matchedSegments.orEmpty().flatten() + undiscoveredSegments.orEmpty().flatten()
     val minLat = framePoints.minOf { it.latitude }
     val maxLat = framePoints.maxOf { it.latitude }
     val minLon = framePoints.minOf { it.longitude }
@@ -66,6 +70,11 @@ fun TrackMapView(
         matchedSegments?.forEach { segment ->
             if (segment.size >= 2) {
                 drawPath(pathFor(segment), color = Color(0xFF2E7D32), style = Stroke(width = 6f))
+            }
+        }
+        undiscoveredSegments?.forEach { segment ->
+            if (segment.size >= 2) {
+                drawPath(pathFor(segment), color = Color(0xFF757575), style = Stroke(width = 6f))
             }
         }
     }

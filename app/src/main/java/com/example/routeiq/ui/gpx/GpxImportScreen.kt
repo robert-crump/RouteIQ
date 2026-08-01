@@ -9,7 +9,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -29,6 +31,9 @@ import com.example.routeiq.domain.matching.MatchResult
 import com.example.routeiq.domain.matching.RouteGraphMatcher
 import com.example.routeiq.domain.matching.matchedRouteSegments
 import com.example.routeiq.domain.model.GpxTrack
+import com.example.routeiq.domain.model.GraphEdge
+import com.example.routeiq.domain.scoring.DiscoveryBucket
+import com.example.routeiq.domain.scoring.DiscoveryScore
 import kotlinx.coroutines.launch
 
 private sealed interface GpxImportUiState {
@@ -135,7 +140,40 @@ private fun GpxTrackSummary(track: GpxTrack, matchState: MatchUiState?) {
             )
             is MatchUiState.Matched -> Text("Matched to map graph: ${matchState.result.coveragePercent}% of the route covered")
         }
-        val matchedSegments = (matchState as? MatchUiState.Matched)?.result?.matchedEdges?.let(::matchedRouteSegments)
-        TrackMapView(points = track.points, modifier = Modifier.fillMaxWidth(), matchedSegments = matchedSegments)
+        val matchedEdges = (matchState as? MatchUiState.Matched)?.result?.matchedEdges
+        val (traversedEdges, undiscoveredEdges) = matchedEdges.orEmpty().partition { it.isTraversed }
+        TrackMapView(
+            points = track.points,
+            modifier = Modifier.fillMaxWidth(),
+            matchedSegments = matchedEdges?.let { matchedRouteSegments(traversedEdges) },
+            undiscoveredSegments = matchedEdges?.let { matchedRouteSegments(undiscoveredEdges) },
+        )
+        if (matchedEdges != null) {
+            DiscoveryScoreCard(matchedEdges)
+        }
+    }
+}
+
+@Composable
+private fun DiscoveryScoreCard(matchedEdges: List<GraphEdge>) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Discovery score", style = MaterialTheme.typography.titleMedium)
+            val score = DiscoveryScore.compute(matchedEdges)
+            if (score == null) {
+                Text(
+                    "Discovery score unavailable",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text("$score% — ${DiscoveryBucket.forScore(score).label}", style = MaterialTheme.typography.headlineSmall)
+                Text(
+                    "The percentage of this route's roads you haven't ridden before.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
