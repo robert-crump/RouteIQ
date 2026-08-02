@@ -313,7 +313,8 @@ private fun elevationAt(profile: List<Pair<Double, Double>>, distanceM: Double):
 /**
  * A TdF "stage profile"-style chart: the smoothed elevation line, with the filled area beneath it
  * colored by climb category over each detected climb's distance range (neutral gray elsewhere), and
- * a small category badge floating above each climb's own summit in a reserved band above the plot.
+ * a small category badge horizontally centered over each climb, floating above its summit height in
+ * a reserved band above the plot.
  */
 @Composable
 private fun ElevationProfileChart(result: ElevationScore.Result) {
@@ -392,7 +393,7 @@ private fun ElevationProfileChart(result: ElevationScore.Result) {
                 val badgeWidth = textLayout.size.width + hPaddingPx * 2
                 val badgeHeight = textLayout.size.height + vPaddingPx * 2
                 val badgeTop = summitY - badgeGapPx - badgeHeight
-                val badgeLeft = xFor(climb.endM) - badgeWidth / 2f
+                val badgeLeft = xFor((climb.startM + climb.endM) / 2.0) - badgeWidth / 2f
                 drawRoundRect(
                     color = climbColors[i],
                     topLeft = Offset(badgeLeft, badgeTop),

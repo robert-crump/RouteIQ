@@ -8,9 +8,13 @@
     anywhere, not tap-to-expand. The user's call: the colored fill band under each climb already
     conveys its shape/length, so a text readout is redundant with the chart itself.
   - Each climb instead gets a small pill badge (category label only, e.g. "Cat 2") floating inside the
-    chart, anchored at the climb's own summit point (climb.endM is literally where the ascending run
-    peaks, per detectClimbs) - both axes anchor there, not a separate midpoint or a shared top row, so
-    there's exactly one well-defined position per badge and no leader line needed.
+    chart, anchored vertically at the climb's own summit (climb.endM is literally where the ascending
+    run peaks, per detectClimbs) - no separate top row/leader line needed.
+- 2026-08-02 follow-up: horizontal anchor moved off the summit x to the climb's midpoint
+  ((startM+endM)/2), per direct user feedback that centering over the whole colored segment reads
+  better than sitting at the summit end. Vertical anchor is untouched - still derived from the
+  summit's elevation (the highest point in the climb by construction), which stays a safe upper bound
+  for clearance at the new, more centered x position too.
   - Headroom for badges is a fixed reserved band (ELEVATION_BADGE_BAND_HEIGHT, 32dp) added purely to
     the Canvas's pixel height, sitting above the data-driven axis - NOT an extra step added to axisMax.
     Gridlines/labels stay exactly as tightly-fit-to-data as before; only badges can reach into that
