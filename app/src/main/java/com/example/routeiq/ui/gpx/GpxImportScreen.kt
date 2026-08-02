@@ -27,11 +27,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.example.routeiq.data.graph.GraphAssetRepository
 import com.example.routeiq.data.graph.GraphDatabase
@@ -229,8 +234,8 @@ private fun ElevationScoreCard(elevationResult: ElevationScore.Result?, waitingF
                     val numberFormat = remember { NumberFormat.getIntegerInstance() }
                     val gainRoundedTo10m = ((elevationResult.gainM / 10.0).roundToInt() * 10)
                     Text(
-                        "Up: ${numberFormat.format(gainRoundedTo10m)}m, Down: ${numberFormat.format(elevationResult.lossM)}m, " +
-                            "Per 100km: ${numberFormat.format(elevationResult.gainPer100km)}m",
+                        "${numberFormat.format(gainRoundedTo10m)}m ↑, ${numberFormat.format(elevationResult.lossM)}m ↓, " +
+                            "${numberFormat.format(elevationResult.gainPer100km)}m / 100km",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     if (elevationResult.source == ElevationScore.Source.DEM_FALLBACK) {
@@ -238,16 +243,6 @@ private fun ElevationScoreCard(elevationResult: ElevationScore.Result?, waitingF
                             "This file has no elevation data - estimated from the map's elevation data instead.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    elevationResult.climbs.forEach { climb ->
-                        val lengthKm = (climb.endM - climb.startM) / 1000.0
-                        Text(
-                            "${climb.category.label}: %.1f km at %.1f%% (%.1f-%.1f km, +%.0fm)".format(
-                                lengthKm, climb.avgGradePercent, climb.startM / 1000.0, climb.endM / 1000.0, climb.gainM,
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = climbCategoryColor(climb.category),
                         )
                     }
                 }
@@ -270,6 +265,15 @@ private fun ElevationScoreCard(elevationResult: ElevationScore.Result?, waitingF
 private val ELEVATION_AXIS_STEPS_M = listOf(50.0, 100.0, 200.0, 500.0)
 private const val ELEVATION_AXIS_MAX_TICKS = 6
 
+/** Data-driven plot area height - the axis/gridlines/line are all sized against this, never the badge band below. */
+private val ELEVATION_PLOT_HEIGHT = 140.dp
+
+/** Reserved headroom above the plot purely for climb-category badges - not part of the axis range. */
+private val ELEVATION_BADGE_BAND_HEIGHT = 32.dp
+private val ELEVATION_BADGE_GAP = 6.dp
+private val ELEVATION_BADGE_H_PADDING = 6.dp
+private val ELEVATION_BADGE_V_PADDING = 3.dp
+
 private fun elevationAxisStep(minEle: Double, maxEle: Double): Double {
     for (step in ELEVATION_AXIS_STEPS_M) {
         val axisMin = floor(minEle / step) * step
@@ -290,9 +294,26 @@ private fun climbCategoryColor(category: ElevationScore.ClimbCategory): Color = 
     ElevationScore.ClimbCategory.HC -> Color(0xFF6A1B9A)
 }
 
+/** Linearly interpolated elevation at [distanceM] along [profile] (sorted ascending by distance) - used to anchor a climb's badge to its actual summit height. */
+private fun elevationAt(profile: List<Pair<Double, Double>>, distanceM: Double): Double {
+    val idx = profile.indexOfFirst { it.first >= distanceM }
+    return when (idx) {
+        0 -> profile.first().second
+        -1 -> profile.last().second
+        else -> {
+            val (d0, e0) = profile[idx - 1]
+            val (d1, e1) = profile[idx]
+            if (d1 <= d0) return e0
+            val t = ((distanceM - d0) / (d1 - d0)).coerceIn(0.0, 1.0)
+            e0 + t * (e1 - e0)
+        }
+    }
+}
+
 /**
  * A TdF "stage profile"-style chart: the smoothed elevation line, with the filled area beneath it
- * colored by climb category over each detected climb's distance range (neutral gray elsewhere).
+ * colored by climb category over each detected climb's distance range (neutral gray elsewhere), and
+ * a small category badge floating above each climb's own summit in a reserved band above the plot.
  */
 @Composable
 private fun ElevationProfileChart(result: ElevationScore.Result) {
@@ -311,10 +332,12 @@ private fun ElevationProfileChart(result: ElevationScore.Result) {
     val neutralFillColor = MaterialTheme.colorScheme.surfaceVariant
     val referenceLineColor = MaterialTheme.colorScheme.onSurfaceVariant
     val climbColors = result.climbs.map { climbCategoryColor(it.category) }
+    val textMeasurer = rememberTextMeasurer()
+    val badgeTextStyle = MaterialTheme.typography.labelSmall.copy(color = Color.White, fontWeight = FontWeight.Bold)
 
-    Row(modifier = Modifier.fillMaxWidth().height(140.dp)) {
+    Row(modifier = Modifier.fillMaxWidth().height(ELEVATION_PLOT_HEIGHT + ELEVATION_BADGE_BAND_HEIGHT)) {
         Column(
-            modifier = Modifier.fillMaxHeight().padding(end = 4.dp),
+            modifier = Modifier.fillMaxHeight().padding(top = ELEVATION_BADGE_BAND_HEIGHT, end = 4.dp),
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
@@ -323,8 +346,9 @@ private fun ElevationProfileChart(result: ElevationScore.Result) {
             }
         }
         Canvas(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            val plotHeight = size.height - ELEVATION_BADGE_BAND_HEIGHT.toPx()
             fun xFor(distanceM: Double) = (distanceM / maxDistance).toFloat() * size.width
-            fun yFor(elevationM: Double) = size.height - ((elevationM - axisMin) / axisRange).toFloat() * size.height
+            fun yFor(elevationM: Double) = size.height - ((elevationM - axisMin) / axisRange).toFloat() * plotHeight
 
             axisLabels.forEach { label ->
                 val y = yFor(label.toDouble())
@@ -358,6 +382,30 @@ private fun ElevationProfileChart(result: ElevationScore.Result) {
                 if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
             drawPath(path = path, color = lineColor, style = Stroke(width = 2.dp.toPx()))
+
+            val badgeGapPx = ELEVATION_BADGE_GAP.toPx()
+            val hPaddingPx = ELEVATION_BADGE_H_PADDING.toPx()
+            val vPaddingPx = ELEVATION_BADGE_V_PADDING.toPx()
+            result.climbs.forEachIndexed { i, climb ->
+                val summitY = yFor(elevationAt(profile, climb.endM))
+                val textLayout = textMeasurer.measure(climb.category.label, badgeTextStyle)
+                val badgeWidth = textLayout.size.width + hPaddingPx * 2
+                val badgeHeight = textLayout.size.height + vPaddingPx * 2
+                val badgeTop = summitY - badgeGapPx - badgeHeight
+                val badgeLeft = xFor(climb.endM) - badgeWidth / 2f
+                drawRoundRect(
+                    color = climbColors[i],
+                    topLeft = Offset(badgeLeft, badgeTop),
+                    size = Size(badgeWidth, badgeHeight),
+                    cornerRadius = CornerRadius(badgeHeight / 2f, badgeHeight / 2f),
+                )
+                drawText(
+                    textMeasurer = textMeasurer,
+                    text = climb.category.label,
+                    topLeft = Offset(badgeLeft + hPaddingPx, badgeTop + vPaddingPx),
+                    style = badgeTextStyle,
+                )
+            }
         }
     }
 }

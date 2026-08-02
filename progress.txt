@@ -1,3 +1,37 @@
+2026-08-02 - Elevation profile card: simplify summary row, drop climb list, add in-chart category badges
+- Not a tracked GitHub issue - direct user request to simplify the elevation card from issue #7, with
+  a fresh /grill-me session run first (no prior comment to follow this time, unlike #7 itself).
+- Key /grill-me resolutions:
+  - Summary row collapses to "{gain}m ↑, {loss}m ↓, {gainPer100km}m / 100km" (same values/rounding
+    as before, just relabeled with arrow glyphs instead of "Up:"/"Down:"/"Per 100km:" words).
+  - The per-climb text list (category/length/grade%/km-range/gain) is gone entirely - not moved
+    anywhere, not tap-to-expand. The user's call: the colored fill band under each climb already
+    conveys its shape/length, so a text readout is redundant with the chart itself.
+  - Each climb instead gets a small pill badge (category label only, e.g. "Cat 2") floating inside the
+    chart, anchored at the climb's own summit point (climb.endM is literally where the ascending run
+    peaks, per detectClimbs) - both axes anchor there, not a separate midpoint or a shared top row, so
+    there's exactly one well-defined position per badge and no leader line needed.
+  - Headroom for badges is a fixed reserved band (ELEVATION_BADGE_BAND_HEIGHT, 32dp) added purely to
+    the Canvas's pixel height, sitting above the data-driven axis - NOT an extra step added to axisMax.
+    Gridlines/labels stay exactly as tightly-fit-to-data as before; only badges can reach into that
+    band, and only for whichever climb's summit is nearest the profile's global max. Total chart height
+    grew (140dp plot + 32dp band = 172dp) rather than compressing the existing plot to make room.
+  - No collision handling between badges that end up close together - climbs already need >=1km
+    length and >=30m gain to register at all, so near-collisions should be rare; deferred until an
+    actual route demonstrates it's a real problem.
+  - Badges are drawn manually in the same Canvas draw scope as the rest of the chart (rememberTextMeasurer
+    + drawRoundRect + drawText), not a Compose Box/Surface overlay - avoids building a px<->dp coordinate
+    sync layer between an overlay and the Canvas that doesn't exist anywhere else in this chart.
+- New elevationAt(profile, distanceM) helper (GpxImportScreen.kt, UI-local) linearly interpolates the
+  smoothed profile at a climb's endM to find its actual summit elevation for the badge's y-anchor -
+  duplicates ElevationScore's private interpolateElevation rather than exposing it, since it's a
+  small, chart-only concern.
+- No ElevationScore.kt domain logic changed - this was UI-only (GpxImportScreen.kt's ElevationScoreCard
+  and ElevationProfileChart). No new tests; existing 67/67 (./gradlew :app:testDebugUnitTest) and
+  :app:assembleDebug both stay green.
+- No adb/emulator available in this environment (same recurring limitation as issues #3-#7) - the
+  badge placement/headroom band is unverified on-device; rests on the build + existing tests above.
+
 2026-08-01 - Issue #7: Elevation/climb score from the .gpx's own elevation data (ElevationScore)
 - Labeled ready-for-human, not ready-for-agent - proceeded anyway per explicit user instruction to
   use "the /grill-me resolutions from the comment on issue #7", same precedent as issues #5/#6. Unlike
