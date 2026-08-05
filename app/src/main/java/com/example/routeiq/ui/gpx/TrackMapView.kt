@@ -27,6 +27,11 @@ import kotlin.math.max
  * from both the raw track and the rest of the matched route (issue #5). [fuelingSparseSegments] /
  * [fuelingExtendedGapSegments] (issue #6, from [com.example.routeiq.domain.scoring.fuelingGapSegments])
  * highlight POI-sparse stretches of the raw track in red, with extended (15km+) gaps drawn heavier.
+ * [safetyMarkers] (issue #9, from [com.example.routeiq.domain.scoring.safetyMarkers]) draws a
+ * colored point at each flagged junction - a point marker rather than a line-segment overlay
+ * since junctions are single locations, not spans. Colors are resolved by the caller (a
+ * `GeoPoint`-to-`Color` pair) rather than this view depending on `SafetyScore.Tier`, matching how
+ * the elevation chart's climb-category colors stay UI-local instead of living in a shared view.
  */
 @Composable
 fun TrackMapView(
@@ -36,13 +41,15 @@ fun TrackMapView(
     undiscoveredSegments: List<List<GeoPoint>>? = null,
     fuelingSparseSegments: List<List<GeoPoint>>? = null,
     fuelingExtendedGapSegments: List<List<GeoPoint>>? = null,
+    safetyMarkers: List<Pair<GeoPoint, Color>>? = null,
 ) {
     if (points.size < 2) {
         Text("Not enough points to render a track")
         return
     }
 
-    val framePoints = points + matchedSegments.orEmpty().flatten() + undiscoveredSegments.orEmpty().flatten()
+    val framePoints = points + matchedSegments.orEmpty().flatten() + undiscoveredSegments.orEmpty().flatten() +
+        safetyMarkers.orEmpty().map { it.first }
     val minLat = framePoints.minOf { it.latitude }
     val maxLat = framePoints.maxOf { it.latitude }
     val minLon = framePoints.minOf { it.longitude }
@@ -91,7 +98,11 @@ fun TrackMapView(
                 drawPath(pathFor(segment), color = Color(0xFFE53935), style = Stroke(width = 9f))
             }
         }
+        safetyMarkers?.forEach { (point, color) ->
+            drawCircle(color = color, radius = SAFETY_MARKER_RADIUS_PX, center = toOffset(point))
+        }
     }
 }
 
 private const val MIN_SPAN_DEGREES = 1e-6
+private const val SAFETY_MARKER_RADIUS_PX = 7f

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -54,6 +55,9 @@ import com.example.routeiq.domain.scoring.DurationEstimate
 import com.example.routeiq.domain.scoring.FuelingBucket
 import com.example.routeiq.domain.scoring.FuelingScore
 import com.example.routeiq.domain.scoring.fuelingGapSegments
+import com.example.routeiq.domain.scoring.SafetyMarker
+import com.example.routeiq.domain.scoring.SafetyScore
+import com.example.routeiq.domain.scoring.safetyMarkers
 import java.text.NumberFormat
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -94,6 +98,18 @@ private sealed interface DurationUiState {
 }
 
 /**
+ * The safety score's counts (issue #9) come straight from [MatchResult.Matched.matchedTurns], so
+ * they're computed synchronously alongside [MatchUiState.Matched] rather than needing their own
+ * state - only resolving each flagged junction's coordinates for the map needs an async
+ * [GraphAssetRepository.getNodesNear] fetch, which is what this state tracks.
+ */
+private sealed interface SafetyMarkersUiState {
+    data object Loading : SafetyMarkersUiState
+    data class Ready(val markers: List<SafetyMarker>) : SafetyMarkersUiState
+    data class Error(val message: String) : SafetyMarkersUiState
+}
+
+/**
  * Lets the rider bring a `.gpx` route into Route IQ via a manual file picker, or via [incomingUri]
  * when the file arrived through the Android share sheet (see `MainActivity`'s intent handling).
  * Renders the parsed track on [TrackMapView] once loaded, so the import pipeline is verifiable
@@ -114,6 +130,7 @@ fun GpxImportScreen(
     var matchState by remember { mutableStateOf<MatchUiState?>(null) }
     var fuelingState by remember { mutableStateOf<FuelingUiState?>(null) }
     var durationState by remember { mutableStateOf<DurationUiState?>(null) }
+    var safetyMarkersState by remember { mutableStateOf<SafetyMarkersUiState?>(null) }
     val repository = remember { GraphAssetRepository(GraphDatabase.getInstance(context).graphAssetDao()) }
     val matcher = remember { RouteGraphMatcher(repository) }
 
@@ -182,6 +199,24 @@ fun GpxImportScreen(
         }
     }
 
+    LaunchedEffect(matchedTrackResult) {
+        val track = loadedTrack
+        val flaggedJunctions = matchedTrackResult
+            ?.let { SafetyScore.compute(it.matchedTurns, it.matchedDistanceM).flaggedJunctions }
+        if (track == null || flaggedJunctions == null) {
+            safetyMarkersState = null
+            return@LaunchedEffect
+        }
+        safetyMarkersState = SafetyMarkersUiState.Loading
+        safetyMarkersState = try {
+            val box = GeoUtils.computeBoundingBox(track.points, SafetyScore.JUNCTION_LOOKUP_BUFFER_M)
+            val nodes = repository.getNodesNear(box)
+            SafetyMarkersUiState.Ready(safetyMarkers(flaggedJunctions, nodes))
+        } catch (e: Exception) {
+            SafetyMarkersUiState.Error(e.message ?: e.toString())
+        }
+    }
+
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { importUri(it) }
     }
@@ -198,7 +233,7 @@ fun GpxImportScreen(
             is GpxImportUiState.Idle -> Text("No route loaded yet.")
             is GpxImportUiState.Loading -> CircularProgressIndicator()
             is GpxImportUiState.Error -> Text("Couldn't import: ${state.message}")
-            is GpxImportUiState.Loaded -> GpxTrackSummary(state.track, matchState, fuelingState, durationState)
+            is GpxImportUiState.Loaded -> GpxTrackSummary(state.track, matchState, fuelingState, durationState, safetyMarkersState)
         }
     }
 }
@@ -209,6 +244,7 @@ private fun GpxTrackSummary(
     matchState: MatchUiState?,
     fuelingState: FuelingUiState?,
     durationState: DurationUiState?,
+    safetyMarkersState: SafetyMarkersUiState?,
 ) {
     var useDetourCorridor by remember { mutableStateOf(false) }
 
@@ -224,10 +260,13 @@ private fun GpxTrackSummary(
             )
             is MatchUiState.Matched -> Text("Matched to map graph: ${matchState.result.coveragePercent}% of the route covered")
         }
-        val matchedEdges = (matchState as? MatchUiState.Matched)?.result?.matchedEdges
+        val matchedResult = (matchState as? MatchUiState.Matched)?.result
+        val matchedEdges = matchedResult?.matchedEdges
         val (traversedEdges, undiscoveredEdges) = matchedEdges.orEmpty().partition { it.isTraversed }
         val fuelingResult = (fuelingState as? FuelingUiState.Ready)?.result
         val selectedCorridor = fuelingResult?.let { if (useDetourCorridor) it.withDetour else it.onRoute }
+        val safetyResult = matchedResult?.let { SafetyScore.compute(it.matchedTurns, it.matchedDistanceM) }
+        val resolvedSafetyMarkers = (safetyMarkersState as? SafetyMarkersUiState.Ready)?.markers
         TrackMapView(
             points = track.points,
             modifier = Modifier.fillMaxWidth(),
@@ -235,6 +274,7 @@ private fun GpxTrackSummary(
             undiscoveredSegments = matchedEdges?.let { matchedRouteSegments(undiscoveredEdges) },
             fuelingSparseSegments = selectedCorridor?.let { fuelingGapSegments(track.points, it.sparseRanges) },
             fuelingExtendedGapSegments = selectedCorridor?.let { fuelingGapSegments(track.points, it.extendedGaps) },
+            safetyMarkers = resolvedSafetyMarkers?.map { it.point to safetyTierColor(it.tier) },
         )
         // Renders as soon as the .gpx's own <ele> data is available - no map match needed. Only
         // when the file has no elevation data at all does it wait on matchedEdges, to fall back
@@ -249,6 +289,9 @@ private fun GpxTrackSummary(
         )
         if (matchedEdges != null) {
             DiscoveryScoreCard(matchedEdges)
+        }
+        if (safetyResult != null) {
+            SafetyScoreCard(safetyResult)
         }
         if (fuelingState != null) {
             FuelingScoreCard(fuelingState, useDetourCorridor, onUseDetourCorridorChange = { useDetourCorridor = it })
@@ -585,5 +628,49 @@ private fun DiscoveryScoreCard(matchedEdges: List<GraphEdge>) {
                 )
             }
         }
+    }
+}
+
+/** LOW/MEDIUM/HIGH marker + legend color, distinct from the other cards' palettes. */
+private fun safetyTierColor(tier: SafetyScore.Tier): Color = when (tier) {
+    SafetyScore.Tier.LOW -> Color(0xFFFBC02D)
+    SafetyScore.Tier.MEDIUM -> Color(0xFFFB8C00)
+    SafetyScore.Tier.HIGH -> Color(0xFFE53935)
+}
+
+@Composable
+private fun SafetyScoreCard(result: SafetyScore.Result) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Safety score", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "${result.totalFlaggedCount} flagged junction${if (result.totalFlaggedCount == 1) "" else "s"} " +
+                    "(${result.flaggedPer100km} / 100km)",
+                style = MaterialTheme.typography.headlineSmall,
+            )
+            Text(
+                "Junctions with a nonzero hazard score, from the map graph's own turn data.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (result.totalFlaggedCount > 0) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SafetyTierLegendItem(SafetyScore.Tier.LOW, result.lowCount)
+                    SafetyTierLegendItem(SafetyScore.Tier.MEDIUM, result.mediumCount)
+                    SafetyTierLegendItem(SafetyScore.Tier.HIGH, result.highCount)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SafetyTierLegendItem(tier: SafetyScore.Tier, count: Int) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Canvas(modifier = Modifier.size(10.dp)) { drawCircle(color = safetyTierColor(tier), radius = 5.dp.toPx()) }
+        Text("${tier.label}: $count", style = MaterialTheme.typography.bodySmall)
     }
 }

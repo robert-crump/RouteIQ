@@ -1,3 +1,39 @@
+2026-08-05 - Issue #9: Safety score: flag hazardous roads and junctions (SafetyScore)
+- Labeled ready-for-agent already (an earlier /grill-me session this same day - see the entry below -
+  resolved the design and posted it as an issue comment + rewrote the acceptance criteria). No fresh
+  /grill-me needed this cycle; implementation followed that comment's resolved design directly, same
+  precedent as issue #7 following a pre-existing comment.
+- domain/scoring/SafetyScore.kt: compute(matchedTurns, matchedDistanceM) is a pure, never-null
+  function (diverges from DiscoveryScore's nullable-on-empty shape - "no flagged junctions" is a real,
+  displayable answer here, not a missing one). Filters matchedTurns to hazardScore > 0, tiers each via
+  Tier.forHazardScore (LOW 0-0.33 / MEDIUM 0.33-0.67 / HIGH 0.67+, boundaries inclusive on the low
+  side), and returns total/per-100km/per-tier counts plus the flagged junctions themselves (each
+  carrying hazardSource, read but never displayed or weighted per the resolution).
+- No edge-level HazardFilter port - confirmed against RouteGraphMatcher.lookupMatchedTurns that
+  matchedTurns is already exactly one GraphTurn per junction actually crossed (the specific
+  from/junction/to triple taken), not every turn at every junction, so no dedup was needed on top of
+  the resolution's design.
+- domain/scoring/SafetyRouteMarkers.kt: safetyMarkers(flaggedJunctions, nodes) resolves each flagged
+  junctionNode to a GeoPoint via GraphAssetRepository.getNodesNear (no new SQL) - mirrors
+  fuelingGapSegments' shape (pure function, junction not found in nodes silently dropped rather than
+  crashing). TrackMapView gained a safetyMarkers: List<Pair<GeoPoint, Color>>? param that draws a
+  filled circle per marker - deliberately takes pre-resolved (point, color) pairs rather than
+  depending on SafetyScore.Tier directly, keeping the color mapping UI-local (same call as the
+  elevation chart's climb-category colors) instead of adding a domain.scoring dependency to the view.
+- UI: SafetyScore.compute runs synchronously off MatchResult.Matched.matchedTurns (no async state
+  needed, like DiscoveryScore) so the card's counts appear immediately on match. Resolving marker
+  *coordinates* is a separate async GraphAssetRepository.getNodesNear fetch (new SafetyMarkersUiState,
+  mirrors FuelingUiState's shape) keyed on the match result, since that needs a DB round-trip the
+  score itself doesn't. New SafetyScoreCard shows "{n} flagged junctions (x / 100km)" plus a
+  LOW/MEDIUM/HIGH legend row (dot + count) when any are flagged - no per-junction text list, per the
+  resolution's explicit call (map markers cover location + severity).
+- Tests: 5 new SafetyScoreTest (all-zero hazard scores flags nothing, empty matchedTurns list, the
+  five-junction mixed-tier case with exact 0.33/0.67 boundary values landing on the low side of their
+  tier, zero matchedDistanceM not dividing by zero, hazardSource passthrough not affecting tiering).
+  83/83 total (./gradlew :app:testDebugUnitTest) and :app:assembleDebug both green.
+- No adb/emulator available in this environment (same recurring limitation as issues #3-#7, #10) - the
+  new card and map markers are unverified on-device; rests on the build + tests above.
+
 2026-08-05 - Issue #9 grill-me: Safety score design resolution (no implementation this cycle)
 - No issue was labeled ready-for-agent this cycle (all open issues are ready-for-human or grill-me,
   pending design resolution) - per explicit user request ("/next-issue and /grill-me regarding the
