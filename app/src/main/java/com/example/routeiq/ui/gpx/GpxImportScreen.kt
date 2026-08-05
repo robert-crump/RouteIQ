@@ -50,6 +50,7 @@ import com.example.routeiq.domain.model.GraphEdge
 import com.example.routeiq.domain.scoring.DiscoveryBucket
 import com.example.routeiq.domain.scoring.DiscoveryScore
 import com.example.routeiq.domain.scoring.ElevationScore
+import com.example.routeiq.domain.scoring.DurationEstimate
 import com.example.routeiq.domain.scoring.FuelingBucket
 import com.example.routeiq.domain.scoring.FuelingScore
 import com.example.routeiq.domain.scoring.fuelingGapSegments
@@ -82,6 +83,17 @@ private sealed interface FuelingUiState {
 }
 
 /**
+ * Duration estimate only runs once matching succeeds (issue #10) - it needs the rider's graph-wide
+ * ride history ([GraphAssetRepository.getTraversedEdges]) for its slope-bucket fallback, which is
+ * its own async fetch just like fueling's POI lookup.
+ */
+private sealed interface DurationUiState {
+    data object Loading : DurationUiState
+    data class Ready(val result: DurationEstimate.Result?) : DurationUiState
+    data class Error(val message: String) : DurationUiState
+}
+
+/**
  * Lets the rider bring a `.gpx` route into Route IQ via a manual file picker, or via [incomingUri]
  * when the file arrived through the Android share sheet (see `MainActivity`'s intent handling).
  * Renders the parsed track on [TrackMapView] once loaded, so the import pipeline is verifiable
@@ -101,6 +113,7 @@ fun GpxImportScreen(
     var uiState by remember { mutableStateOf<GpxImportUiState>(GpxImportUiState.Idle) }
     var matchState by remember { mutableStateOf<MatchUiState?>(null) }
     var fuelingState by remember { mutableStateOf<FuelingUiState?>(null) }
+    var durationState by remember { mutableStateOf<DurationUiState?>(null) }
     val repository = remember { GraphAssetRepository(GraphDatabase.getInstance(context).graphAssetDao()) }
     val matcher = remember { RouteGraphMatcher(repository) }
 
@@ -154,6 +167,21 @@ fun GpxImportScreen(
         }
     }
 
+    LaunchedEffect(matchedTrackResult) {
+        val matchedEdges = matchedTrackResult?.matchedEdges
+        if (matchedEdges == null) {
+            durationState = null
+            return@LaunchedEffect
+        }
+        durationState = DurationUiState.Loading
+        durationState = try {
+            val historicalTraversedEdges = repository.getTraversedEdges()
+            DurationUiState.Ready(DurationEstimate.compute(matchedEdges, historicalTraversedEdges))
+        } catch (e: Exception) {
+            DurationUiState.Error(e.message ?: e.toString())
+        }
+    }
+
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { importUri(it) }
     }
@@ -170,13 +198,18 @@ fun GpxImportScreen(
             is GpxImportUiState.Idle -> Text("No route loaded yet.")
             is GpxImportUiState.Loading -> CircularProgressIndicator()
             is GpxImportUiState.Error -> Text("Couldn't import: ${state.message}")
-            is GpxImportUiState.Loaded -> GpxTrackSummary(state.track, matchState, fuelingState)
+            is GpxImportUiState.Loaded -> GpxTrackSummary(state.track, matchState, fuelingState, durationState)
         }
     }
 }
 
 @Composable
-private fun GpxTrackSummary(track: GpxTrack, matchState: MatchUiState?, fuelingState: FuelingUiState?) {
+private fun GpxTrackSummary(
+    track: GpxTrack,
+    matchState: MatchUiState?,
+    fuelingState: FuelingUiState?,
+    durationState: DurationUiState?,
+) {
     var useDetourCorridor by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -219,6 +252,9 @@ private fun GpxTrackSummary(track: GpxTrack, matchState: MatchUiState?, fuelingS
         }
         if (fuelingState != null) {
             FuelingScoreCard(fuelingState, useDetourCorridor, onUseDetourCorridorChange = { useDetourCorridor = it })
+        }
+        if (durationState != null) {
+            DurationEstimateCard(durationState)
         }
     }
 }
@@ -473,6 +509,54 @@ private fun FuelingScoreCard(
                                 color = Color(0xFFB00020),
                             )
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** "2h 34m" for anything an hour or over, "34m" otherwise - no seconds, this is a ride-planning estimate, not a stopwatch. */
+private fun formatDurationS(totalDurationS: Double): String {
+    val totalMinutes = (totalDurationS / 60.0).roundToInt()
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+    return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+}
+
+@Composable
+private fun DurationEstimateCard(durationState: DurationUiState) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Estimated duration", style = MaterialTheme.typography.titleMedium)
+            when (durationState) {
+                is DurationUiState.Loading -> Text(
+                    "Estimating from ride history…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                is DurationUiState.Error -> Text(
+                    "Couldn't estimate duration: ${durationState.message}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFB00020),
+                )
+                is DurationUiState.Ready -> {
+                    val result = durationState.result
+                    if (result == null) {
+                        Text(
+                            "Duration estimate unavailable",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Text(formatDurationS(result.totalDurationS), style = MaterialTheme.typography.headlineSmall)
+                        Text(
+                            "${result.ownHistoryEdgeCount} edges from your own ride history, " +
+                                "${result.slopeBucketEdgeCount} estimated by slope, " +
+                                "${result.graphAverageEdgeCount} by graph-wide average.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

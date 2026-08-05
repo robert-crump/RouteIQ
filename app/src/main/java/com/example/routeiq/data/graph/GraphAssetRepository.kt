@@ -12,6 +12,7 @@ import com.example.routeiq.domain.model.GraphTurn
 import com.example.routeiq.domain.model.Poi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /**
  * Row counts across the bundled map graph's tables. Individual counts are
@@ -110,13 +111,19 @@ class GraphAssetRepository(private val dao: GraphAssetDao) {
         }
     }
 
+    private companion object {
+        /** Shared by [getEdgesNear] and [getTraversedEdges] - same 9-column shape, metadata last. */
+        const val EDGE_COLUMNS =
+            "e.from_node, e.to_node, e.length_m, e.highway, e.name, e.is_traversed, e.geometry_encoded, e.slope_percent, e.metadata"
+    }
+
     /**
      * Edges with at least one endpoint inside [box] - mirrors Velometrics' `MapEdgeDao.getNear`
      * (an OR on both endpoints, not AND, so edges crossing the box's boundary aren't dropped).
      */
     suspend fun getEdgesNear(box: BoundingBox): List<GraphEdge> = withContext(Dispatchers.IO) {
         val sql = """
-            SELECT e.from_node, e.to_node, e.length_m, e.highway, e.name, e.is_traversed, e.geometry_encoded, e.slope_percent
+            SELECT $EDGE_COLUMNS
             FROM ${GraphTable.MAP_EDGES.tableName} e
             INNER JOIN ${GraphTable.MAP_NODES.tableName} nf ON e.from_node = nf.id
             INNER JOIN ${GraphTable.MAP_NODES.tableName} nt ON e.to_node = nt.id
@@ -126,21 +133,53 @@ class GraphAssetRepository(private val dao: GraphAssetDao) {
         val args = arrayOf(box.minLat, box.maxLat, box.minLon, box.maxLon, box.minLat, box.maxLat, box.minLon, box.maxLon)
         dao.rawQuery(SimpleSQLiteQuery(sql, args)).use { cursor ->
             buildList {
-                while (cursor.moveToNext()) {
-                    add(
-                        GraphEdge(
-                            fromNode = cursor.getLong(0),
-                            toNode = cursor.getLong(1),
-                            lengthM = cursor.getDouble(2),
-                            highway = cursor.getStringOrNull(3),
-                            name = cursor.getStringOrNull(4),
-                            isTraversed = cursor.getInt(5) != 0,
-                            geometryEncoded = cursor.getStringOrNull(6),
-                            slopePercent = cursor.getDoubleOrNull(7),
-                        ),
-                    )
-                }
+                while (cursor.moveToNext()) add(edgeFromCursor(cursor))
             }
+        }
+    }
+
+    /**
+     * Every edge the rider has ridden at least once, graph-wide (no bounding box) - the historical
+     * sample [DurationEstimate][com.example.routeiq.domain.scoring.DurationEstimate] builds its
+     * slope-bucket speed fallback from, so an untraversed edge's estimate doesn't depend on a
+     * *nearby* traversed edge existing (only ~3% of edges in the bundled graph are traversed, so
+     * this is a modest read - not worth bbox-scoping).
+     */
+    suspend fun getTraversedEdges(): List<GraphEdge> = withContext(Dispatchers.IO) {
+        val sql = "SELECT $EDGE_COLUMNS FROM ${GraphTable.MAP_EDGES.tableName} e WHERE e.is_traversed = 1"
+        dao.rawQuery(SimpleSQLiteQuery(sql)).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(edgeFromCursor(cursor))
+            }
+        }
+    }
+
+    private fun edgeFromCursor(cursor: android.database.Cursor): GraphEdge {
+        val (speedMedianKmh, speedMeanKmh) = parseSpeedMetadata(cursor.getStringOrNull(8))
+        return GraphEdge(
+            fromNode = cursor.getLong(0),
+            toNode = cursor.getLong(1),
+            lengthM = cursor.getDouble(2),
+            highway = cursor.getStringOrNull(3),
+            name = cursor.getStringOrNull(4),
+            isTraversed = cursor.getInt(5) != 0,
+            geometryEncoded = cursor.getStringOrNull(6),
+            slopePercent = cursor.getDoubleOrNull(7),
+            speedMedianKmh = speedMedianKmh,
+            speedMeanKmh = speedMeanKmh,
+        )
+    }
+
+    /** Pulls `speed_median`/`speed_mean` (km/h) out of `map_edges.metadata`'s JSON blob, if present. */
+    private fun parseSpeedMetadata(metadataJson: String?): Pair<Double?, Double?> {
+        if (metadataJson.isNullOrEmpty()) return null to null
+        return try {
+            val json = JSONObject(metadataJson)
+            val median = if (json.has("speed_median") && !json.isNull("speed_median")) json.getDouble("speed_median") else null
+            val mean = if (json.has("speed_mean") && !json.isNull("speed_mean")) json.getDouble("speed_mean") else null
+            median to mean
+        } catch (e: org.json.JSONException) {
+            null to null
         }
     }
 

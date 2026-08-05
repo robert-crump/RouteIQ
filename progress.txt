@@ -1,3 +1,50 @@
+2026-08-05 - Issue #10: Duration estimate: historical speed with slope-bucket fallback (DurationEstimate)
+- Also ran a /grill-me session on issue #8 (OptimizationScore) this cycle per explicit user request,
+  but that issue turned out to be *blocked*, not implemented: grounded the open questions in the real
+  bundled cycling_graph.db (98%+ of map_turns have zero stop_penalty, 99.55% have null
+  braking_probability) and in Ride-Graph's own history. The user's intended model - sum stop +
+  braking + re-acceleration penalties in seconds, scaled per 100km - needs Ride-Graph's
+  `braking_penalty_s` (issue #79/#84/#85), which was deliberately never exported to `map_turns`
+  ("deferred to a follow-up... once the numbers can be sanity-checked"). Filed
+  github.com/robert-crump/Ride-Graph#98 to export it, posted the full resolution + decisions
+  (score direction, no-signal default, calibration-via-named-constants) as a comment on RouteIQ#8,
+  and updated its body's "Blocked by" list. No RouteIQ code changed for #8 - stays ready-for-human.
+- #10 itself needed no grill-me (ready-for-agent, fully specified). Design decisions:
+  - GraphEdge gained speedMedianKmh/speedMeanKmh (both default null), parsed by
+    GraphAssetRepository from map_edges.metadata's speed_median/speed_mean JSON keys via
+    org.json.JSONObject (new getEdgesNear column; no new Gradle dependency, org.json ships with
+    Android/Robolectric). Kept as two typed fields rather than exposing the raw JSON blob on
+    GraphEdge, matching how slopePercent was added in issue #7 - each scoring module adds just the
+    typed fields it actually needs.
+  - New GraphAssetRepository.getTraversedEdges(): List<GraphEdge> - graph-wide (no bounding box),
+    since DurationEstimate's slope-bucket fallback is explicitly supposed to work from the rider's
+    *whole* ride history, not just traversed edges near this one route (the issue's whole point vs.
+    Velometrics' nearest-parallel-edge "surrogate" - only ~3% of the bundled graph's edges are
+    traversed, so a graph-wide read is still modest).
+  - domain/scoring/DurationEstimate.kt: compute(matchedEdges, historicalTraversedEdges) sums
+    per-edge duration with a three-tier fallback: (1) the edge's own speedMedianKmh ?: speedMeanKmh
+    if isTraversed, (2) a 2%-wide slope bucket's average speed (same bucket width as Ride-Graph's
+    own flow/energy predictors), built from historicalTraversedEdges, (3) the rider's graph-wide
+    average speed across all historical edges, or DEFAULT_FALLBACK_SPEED_KMH (20 km/h) if there's
+    no ride history at all. Deliberate simplification vs. Ride-Graph's flow predictor: an empty
+    exact-slope-bucket does NOT fall through to a nearby bucket, it drops straight to the
+    graph-wide average - avoids nearest-bucket-interpolation complexity for a marginal accuracy gain.
+  - UI: GpxImportScreen fetches getTraversedEdges() once matching succeeds (mirrors Fueling's
+    POI-fetch-on-match pattern) and renders a new "Estimated duration" card ("2h 34m" style) with a
+    breakdown line of how many edges came from own-history vs. slope-bucket vs. graph-average, for
+    transparency about how much of the estimate is a real vs. extrapolated number.
+- RouteGraphMatcherTest's map_edges fixture widened with a metadata column (existing pattern from
+  issue #7's slope_percent addition) - all matcher tests still pass NULL metadata since none of them
+  exercise speed. GraphAssetRepositoryTest's map_edges fixture gained length_m/highway/name/
+  geometry_encoded columns plus a traversed/untraversed edge pair, to directly test getEdgesNear's
+  metadata parsing and the new getTraversedEdges filter.
+- Tests: 11 new (9 DurationEstimateTest covering empty/all-traversed/all-untraversed/mixed/
+  missing-median-falls-to-mean/missing-slope-and-no-history/empty-bucket-does-NOT-nearest-fallback/
+  traversed-with-no-speed-data/zero-length-edge; 2 GraphAssetRepositoryTest for metadata parsing +
+  getTraversedEdges). 78/78 total (./gradlew :app:testDebugUnitTest) and :app:assembleDebug both green.
+- No adb/emulator available in this environment (same recurring limitation as issues #3-#7) - the
+  new duration card is unverified on-device; rests on the build + tests above.
+
 2026-08-02 - Elevation profile card: simplify summary row, drop climb list, add in-chart category badges
 - Not a tracked GitHub issue - direct user request to simplify the elevation card from issue #7, with
   a fresh /grill-me session run first (no prior comment to follow this time, unlike #7 itself).

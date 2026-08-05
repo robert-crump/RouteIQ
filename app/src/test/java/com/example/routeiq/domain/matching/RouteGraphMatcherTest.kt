@@ -62,6 +62,16 @@ class RouteGraphMatcherTest {
         )
     }
 
+    /** Round-trips [GraphEdge.speedMedianKmh]/[speedMeanKmh] back into the `metadata` JSON blob column - none of these matching tests set either, so this is null for all of them today. */
+    private fun edgeMetadataJson(e: GraphEdge): String? {
+        if (e.speedMedianKmh == null && e.speedMeanKmh == null) return null
+        val fields = buildList {
+            e.speedMedianKmh?.let { add(""""speed_median": $it""") }
+            e.speedMeanKmh?.let { add(""""speed_mean": $it""") }
+        }
+        return "{${fields.joinToString(", ")}}"
+    }
+
     /** A GPX point at the given latitude, fixed longitude - matches the ported tests' north-bound chains. */
     private fun pt(lat: Double, lon: Double = 6.0800): GeoPoint = GeoPoint(lat, lon)
 
@@ -79,7 +89,7 @@ class RouteGraphMatcherTest {
             db.execSQL("CREATE TABLE map_nodes (id INTEGER PRIMARY KEY, lat REAL, lon REAL)")
             db.execSQL(
                 "CREATE TABLE map_edges (from_node INTEGER, to_node INTEGER, length_m REAL, highway TEXT, " +
-                    "name TEXT, is_traversed INTEGER NOT NULL DEFAULT 0, geometry_encoded TEXT, slope_percent REAL)",
+                    "name TEXT, is_traversed INTEGER NOT NULL DEFAULT 0, geometry_encoded TEXT, slope_percent REAL, metadata TEXT)",
             )
             db.execSQL(
                 "CREATE TABLE map_turns (from_node INTEGER, junction_node INTEGER, to_node INTEGER, " +
@@ -93,9 +103,12 @@ class RouteGraphMatcherTest {
             }
             for (e in edges) {
                 db.execSQL(
-                    "INSERT INTO map_edges (from_node, to_node, length_m, highway, name, is_traversed, geometry_encoded, slope_percent) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    arrayOf(e.fromNode, e.toNode, e.lengthM, e.highway, e.name, if (e.isTraversed) 1 else 0, e.geometryEncoded, e.slopePercent),
+                    "INSERT INTO map_edges (from_node, to_node, length_m, highway, name, is_traversed, geometry_encoded, slope_percent, metadata) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    arrayOf(
+                        e.fromNode, e.toNode, e.lengthM, e.highway, e.name, if (e.isTraversed) 1 else 0, e.geometryEncoded,
+                        e.slopePercent, edgeMetadataJson(e),
+                    ),
                 )
             }
             for (t in turns) {

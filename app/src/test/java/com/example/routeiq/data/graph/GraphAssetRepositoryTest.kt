@@ -47,8 +47,8 @@ class GraphAssetRepositoryTest {
     fun `graph stats reflect fixture row counts`() = runBlocking {
         val stats = repository.getGraphStats()
 
-        assertEquals(3L, stats.nodeCount)
-        assertEquals(5L, stats.edgeCount)
+        assertEquals(5L, stats.nodeCount)
+        assertEquals(7L, stats.edgeCount)
         assertEquals(2L, stats.turnCount)
         assertEquals(4L, stats.poiCount)
         assertEquals(1L, stats.metadataCount)
@@ -59,7 +59,7 @@ class GraphAssetRepositoryTest {
 
     @Test
     fun `rowCount queries an individual table`() = runBlocking {
-        assertEquals(5L, repository.rowCount(GraphTable.MAP_EDGES))
+        assertEquals(7L, repository.rowCount(GraphTable.MAP_EDGES))
     }
 
     @Test
@@ -78,6 +78,29 @@ class GraphAssetRepositoryTest {
     }
 
     @Test
+    fun `getEdgesNear parses speed_median and speed_mean out of the metadata JSON blob`() = runBlocking {
+        val edges = repository.getEdgesNear(BoundingBox(minLat = 0.4, minLon = 0.4, maxLat = 0.7, maxLon = 0.6))
+
+        val traversed = edges.single { it.fromNode == 10L && it.toNode == 11L }
+        assertEquals(20.5, traversed.speedMedianKmh!!, 1e-9)
+        assertEquals(21.0, traversed.speedMeanKmh!!, 1e-9)
+
+        val untraversed = edges.single { it.fromNode == 11L && it.toNode == 10L }
+        assertEquals(null, untraversed.speedMedianKmh)
+        assertEquals(null, untraversed.speedMeanKmh)
+        assertEquals(3.5, untraversed.slopePercent!!, 1e-9)
+    }
+
+    @Test
+    fun `getTraversedEdges returns only edges with is_traversed = 1, graph-wide`() = runBlocking {
+        val traversedEdges = repository.getTraversedEdges()
+
+        assertEquals(1, traversedEdges.size)
+        assertEquals(10L, traversedEdges.single().fromNode)
+        assertEquals(11L, traversedEdges.single().toNode)
+    }
+
+    @Test
     fun `metadata rows are read regardless of column shape`() = runBlocking {
         val rows = repository.getMetadataRows()
 
@@ -91,6 +114,7 @@ class GraphAssetRepositoryTest {
             db.execSQL("CREATE TABLE map_nodes (id INTEGER PRIMARY KEY, lat REAL, lon REAL)")
             db.execSQL(
                 "CREATE TABLE map_edges (id INTEGER PRIMARY KEY, from_node INTEGER, to_node INTEGER, " +
+                    "length_m REAL, highway TEXT, name TEXT, geometry_encoded TEXT, " +
                     "is_traversed INTEGER, slope_percent REAL, surface TEXT, metadata TEXT)",
             )
             db.execSQL(
@@ -110,6 +134,18 @@ class GraphAssetRepositoryTest {
 
             repeat(3) { i -> db.execSQL("INSERT INTO map_nodes (id, lat, lon) VALUES ($i, 0.0, 0.0)") }
             repeat(5) { i -> db.execSQL("INSERT INTO map_edges (id, from_node, to_node, is_traversed) VALUES ($i, 0, 1, 0)") }
+            // A traversed/untraversed pair used by the getEdgesNear/getTraversedEdges tests below,
+            // sitting away from the other fixture nodes so a tight bounding box isolates them.
+            db.execSQL("INSERT INTO map_nodes (id, lat, lon) VALUES (10, 0.5, 0.5)")
+            db.execSQL("INSERT INTO map_nodes (id, lat, lon) VALUES (11, 0.6, 0.5)")
+            db.execSQL(
+                "INSERT INTO map_edges (id, from_node, to_node, length_m, is_traversed, metadata) VALUES " +
+                    "(100, 10, 11, 1000.0, 1, '{\"speed_median\": 20.5, \"speed_mean\": 21.0}')",
+            )
+            db.execSQL(
+                "INSERT INTO map_edges (id, from_node, to_node, length_m, is_traversed, slope_percent) VALUES " +
+                    "(101, 11, 10, 1000.0, 0, 3.5)",
+            )
             repeat(2) { i -> db.execSQL("INSERT INTO map_turns (id, node_id) VALUES ($i, 0)") }
             db.execSQL(
                 "INSERT INTO pois (poi_id, name, category, cuisine, lat, lon, opening_hours) VALUES " +
