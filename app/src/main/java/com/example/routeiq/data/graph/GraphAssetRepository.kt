@@ -187,7 +187,8 @@ class GraphAssetRepository(private val dao: GraphAssetDao) {
     suspend fun getTurnsNear(box: BoundingBox): List<GraphTurn> = withContext(Dispatchers.IO) {
         val sql = """
             SELECT t.from_node, t.junction_node, t.to_node, t.hazard_score, t.hazard_source,
-                   t.stop_penalty, t.stop_penalty_source, t.braking_probability, t.median_ke_delta, t.stop_penalty_confidence
+                   t.stop_penalty, t.stop_penalty_source, t.braking_probability, t.median_ke_delta, t.stop_penalty_confidence,
+                   t.braking_penalty_s, t.braking_penalty_source, t.braking_penalty_confidence
             FROM ${GraphTable.MAP_TURNS.tableName} t
             INNER JOIN ${GraphTable.MAP_NODES.tableName} n ON t.junction_node = n.id
             WHERE n.lat BETWEEN ? AND ? AND n.lon BETWEEN ? AND ?
@@ -207,6 +208,9 @@ class GraphAssetRepository(private val dao: GraphAssetDao) {
                             brakingProbability = cursor.getDoubleOrNull(7),
                             medianKeDelta = cursor.getDoubleOrNull(8),
                             stopPenaltyConfidence = cursor.getDoubleOrNull(9),
+                            brakingPenaltyS = cursor.getDouble(10),
+                            brakingPenaltySource = cursor.getStringOrNull(11),
+                            brakingPenaltyConfidence = cursor.getDoubleOrNull(12),
                         ),
                     )
                 }

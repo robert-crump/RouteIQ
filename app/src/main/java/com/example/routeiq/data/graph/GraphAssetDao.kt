@@ -6,7 +6,7 @@ import androidx.room.RawQuery
 import androidx.sqlite.db.SupportSQLiteQuery
 
 /**
- * Raw-query access to the bundled, externally-produced `cycling_graph.db`.
+ * Raw-query access to the bundled, externally-produced `route_iq.db` (issue #13).
  *
  * The real schema (exact columns, types, indices) is owned by Ride-Graph and
  * isn't available to validate against at compile time, so this DAO

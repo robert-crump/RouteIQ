@@ -19,7 +19,7 @@ abstract class GraphDatabase : RoomDatabase() {
     abstract fun graphAssetDao(): GraphAssetDao
 
     companion object {
-        const val ASSET_FILE_NAME = "cycling_graph.db"
+        const val ASSET_FILE_NAME = "route_iq.db"
 
         @Volatile
         private var instance: GraphDatabase? = null

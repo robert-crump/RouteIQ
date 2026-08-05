@@ -94,7 +94,8 @@ class RouteGraphMatcherTest {
             db.execSQL(
                 "CREATE TABLE map_turns (from_node INTEGER, junction_node INTEGER, to_node INTEGER, " +
                     "hazard_score REAL, hazard_source TEXT, stop_penalty REAL, stop_penalty_source TEXT, " +
-                    "braking_probability REAL, median_ke_delta REAL, stop_penalty_confidence REAL)",
+                    "braking_probability REAL, median_ke_delta REAL, stop_penalty_confidence REAL, " +
+                    "braking_penalty_s REAL, braking_penalty_source TEXT, braking_penalty_confidence REAL)",
             )
             db.execSQL("CREATE TABLE metadata (bbox_south REAL, bbox_west REAL, bbox_north REAL, bbox_east REAL)")
 
@@ -114,11 +115,13 @@ class RouteGraphMatcherTest {
             for (t in turns) {
                 db.execSQL(
                     "INSERT INTO map_turns (from_node, junction_node, to_node, hazard_score, hazard_source, " +
-                        "stop_penalty, stop_penalty_source, braking_probability, median_ke_delta, stop_penalty_confidence) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "stop_penalty, stop_penalty_source, braking_probability, median_ke_delta, stop_penalty_confidence, " +
+                        "braking_penalty_s, braking_penalty_source, braking_penalty_confidence) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     arrayOf(
                         t.fromNode, t.junctionNode, t.toNode, t.hazardScore, t.hazardSource,
                         t.stopPenalty, t.stopPenaltySource, t.brakingProbability, t.medianKeDelta, t.stopPenaltyConfidence,
+                        t.brakingPenaltyS, t.brakingPenaltySource, t.brakingPenaltyConfidence,
                     ),
                 )
             }

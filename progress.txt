@@ -1,3 +1,77 @@
+2026-08-05 - Issue #8: Optimization score: flag high-braking junctions (OptimizationScore)
+- Re-checked this issue (invoked directly via `/next-issue issue 8`) before assuming it was still
+  blocked, since the last session's entry (below, issue #10's) left it stuck on
+  github.com/robert-crump/Ride-Graph#98. Found both that issue AND its sibling
+  github.com/robert-crump/Ride-Graph#99 (the cycling_graph.db -> +velometrics.db/route_iq.db
+  export split) had since closed on the Ride-Graph side, with real calibrated
+  braking_penalty_s data now flowing into route_iq.db's map_turns.
+- Practical blocker was one level down from that: this repo's own bundled asset
+  (app/src/main/assets/cycling_graph.db, dated Jul 31) was still the pre-#98 schema - adding the
+  new columns to GraphAssetRepository's raw SQL turn query would have thrown
+  `SQLiteException: no such column` on-device, breaking the already-working SafetyScore query
+  that shares the same getTurnsNear call. Surfaced this to the user (along with the still-open,
+  unlabeled RouteIQ#13 "swap bundled asset to route_iq.db") before writing any code; user resolved
+  it directly by dropping the regenerated route_iq.db (214MB, has the 3 new columns) into
+  app/src/main/assets/ - confirmed via a one-off python sqlite3 PRAGMA table_info read, not
+  committed (gitignored like the old file).
+- Given that, did the GraphDatabase.ASSET_FILE_NAME swap ("cycling_graph.db" -> "route_iq.db")
+  as part of this cycle too - it's a 1-line constant change (no Room entities to update, since
+  GraphAssetDao is @RawQuery/schema-agnostic per issue #2's design) and is what actually makes
+  #8's new columns readable on-device rather than just in synthetic test fixtures. This
+  substantially delivers RouteIQ#13's core ask, but NOT all of it (no real
+  tests/fixtures/route_iq_fixture.db from Ride-Graph's own test suite was copied in - only the
+  full asset) - left #13 open with a comment rather than closing it.
+- Design: finished what the prior /grill-me session (see #8's own comment thread) left
+  unresolved once it hit the blocker - the model pivots from the issue's literal
+  "stop_penalty/braking_probability/stop_penalty_confidence" wording to a seconds-denominated one:
+  per-junction penaltyS = stopPenalty (wait-time-only) + brakingPenaltyS (Ride-Graph#98's
+  direct-braking + re-acceleration elapsed-time loss), floored at 0 (a calibrated per-type average
+  can go slightly negative from measurement noise - e.g. osm_priority/"stop" = -0.48s per #98's own
+  sanity check - but a junction can't have a genuine negative cost that credits others). Score =
+  100 - (penaltySPer100km / ZERO_SCORE_PENALTY_S_PER_100KM * 100), clamped [0,100], named constants
+  (ZERO_SCORE_PENALTY_S_PER_100KM=300, FLAG_THRESHOLD_S=5.0 - roughly Ride-Graph#98's largest common
+  per-type average, traffic_signals=5.11s) rather than a runtime settings surface, per the original
+  grill-me's calibration decision. stop_penalty_confidence/braking_penalty_confidence are read onto
+  the flagged junction but not weighted into score/flag gate - same "read but not weighted" call
+  SafetyScore made for hazardSource; both are legitimately null for osm_priority/none sources (a
+  static heuristic has no confidence value), not an error case.
+- domain/scoring/OptimizationScore.kt: compute(matchedTurns, matchedDistanceM) is a pure,
+  never-null function (same shape as SafetyScore) - no junctions, or junctions with zero net
+  penalty, both resolve to score 100, not a missing/null result. OptimizationBucket mirrors
+  FuelingBucket/DiscoveryBucket's 4-tier shape (Heavy stop-and-go/Frequent stops/Minor
+  stop-and-go/Efficient).
+- GraphTurn gained brakingPenaltyS/brakingPenaltySource/brakingPenaltyConfidence (defaults
+  0.0/null/null so existing call sites don't need updating); GraphAssetRepository.getTurnsNear
+  widened to select the 3 new map_turns columns. RouteGraphMatcherTest's map_turns fixture
+  table/insert widened to match (same pattern as issue #7/#10's fixture-widening precedent).
+- domain/scoring/OptimizationRouteMarkers.kt: optimizationMarkers(flaggedJunctions, nodes) mirrors
+  safetyMarkers' shape exactly (junction not found in nodes silently dropped). TrackMapView gained
+  an optimizationMarkers: List<GeoPoint>? param, drawn as a filled square (not a circle) in a fresh
+  teal color (0xFF00838F) - deliberately a different *shape* from Safety's circles, since a
+  junction can be flagged by both scores at once and same-shape-different-color markers would be
+  hard to tell apart at a glance.
+- UI: OptimizationScore.compute runs synchronously off MatchResult.Matched.matchedTurns (no async
+  state needed, same as Safety) - new OptimizationScoreCard shows "{score} — {bucket label}" plus a
+  flagged-junction count line. Resolving marker *coordinates* is a separate async
+  GraphAssetRepository.getNodesNear fetch (new OptimizationMarkersUiState, mirrors
+  SafetyMarkersUiState's shape exactly, reuses SafetyScore.JUNCTION_LOOKUP_BUFFER_M since it's the
+  same physical concern - matched-route junctions only need snap-jitter buffer).
+- Ad hoc verification against the real bundled route_iq.db (not committed): ran the exact
+  getTurnsNear SQL shape directly - works against the real schema. Real distribution: 1,522,973
+  turns, 0.93% (14,234) flagged at the 5s threshold, mean per-junction penalty ~0.095s (dominated by
+  ~1.49M zero-source "none" junctions), max observed 167.45s - sanity-checks the chosen constants
+  as reasonable, not just theoretical.
+- Tests: 8 new (OptimizationScoreTest: no junctions, low-penalty unflagged-but-scored,
+  high-penalty flagged, negative-braking-penalty floored-not-credited, null confidence carried
+  through, zero matched distance, score clamped at 0; OptimizationBucketTest: all four boundaries).
+  91/91 total (./gradlew :app:testDebugUnitTest) and :app:assembleDebug both green.
+- No adb/emulator available in this environment (same recurring limitation as issues #3-#10) - the
+  new card and map markers are unverified on-device; rests on the build + tests above.
+- Posted the full resolution as a comment on RouteIQ#8, rewrote its acceptance criteria to match
+  the delivered stop_penalty+braking_penalty_s model (was braking_probability), and closed it.
+  Commented on RouteIQ#13 noting the asset swap + doc-comment updates are done but the
+  official Ride-Graph-generated fixture file wasn't copied in - left that issue open.
+
 2026-08-05 - Issue #9: Safety score: flag hazardous roads and junctions (SafetyScore)
 - Labeled ready-for-agent already (an earlier /grill-me session this same day - see the entry below -
   resolved the design and posted it as an issue comment + rewrote the acceptance criteria). No fresh
@@ -453,39 +527,3 @@
   before that was noticed and the pushed test fixture, and uninstalled the test APK. Verification
   for this issue rests on the unit tests + assembleDebug above, not an on-device screenshot - worth
   setting up a dedicated emulator before the next issue that wants a live-device check.
-
-2026-07-31 - Issue #2: Bundle & query the Ride-Graph map asset (GraphAssetRepository)
-- Added Room (2.8.4, via KSP) + Robolectric to the Gradle setup. Hit two build-system snags along the way:
-  - KSP + AGP 9's "built-in Kotlin" don't get along yet (google/ksp#2729); worked around with
-    android.disallowKotlinSourceSets=false in gradle.properties.
-  - androidx.core-ktx 1.19.0 / lifecycle-runtime-ktx 2.11.0 require compileSdk 37, which isn't
-    installed in this environment (only up to android-36.1); downgraded to core-ktx 1.18.0 /
-    lifecycle-runtime-ktx 2.10.0 to stay on compileSdk 36.1 rather than bump compileSdk.
-- GraphDatabase (Room, entities=[RoomBookkeepingMarker]) opens app/src/main/assets/cycling_graph.db
-  read-only via createFromAsset. Declared zero entities for the real Ride-Graph tables on purpose:
-  Room's runtime schema validation requires an entity's declared columns to exactly match the live
-  table, and the real export's exact column list isn't known here - so GraphAssetDao uses @RawQuery
-  (schema-agnostic) instead, and GraphTable is a closed enum of the 8 documented table names to keep
-  table-name interpolation safe.
-  - GraphAssetRepository exposes getGraphStats() (row counts across all 8 tables) and getMetadataRows()
-    (generic column-agnostic read of the metadata table). More targeted queries (edges by node, turns
-    by junction, spatial lookups) were left for the modules that will actually need them
-    (RouteGraphMatcher etc., per issue #1) rather than guessed at now.
-  - GraphStatsScreen (Compose) wired into MainActivity shows the counts end-to-end.
-- Fixture-backed test (GraphAssetRepositoryTest, Robolectric/JVM): builds its own tiny SQLite fixture
-  in @Before (matching the 8 documented table names) rather than shipping a binary fixture, since the
-  real cycling_graph.db wasn't available on this machine to derive one from.
-- User dropped the real cycling_graph.db (222MB) into app/src/main/assets/ mid-task. Verified
-  GraphAssetRepository against it directly (ad hoc, not committed): row counts matched a plain-sqlite3
-  cross-check exactly (218,857 nodes / 526,408 edges / 1,522,973 turns / 24,705 POIs / 648 corridors /
-  6,480 corridor_connectors / 1 metadata row) - except nodes_rtree, which threw "no such module: rtree"
-  because this machine's SQLite build has no rtree extension compiled in. Made GraphStats fields
-  nullable and per-table counts catch SQLiteException individually, so one unsupported table (rtree
-  support varies by SQLite build/Android version) degrades to null instead of blanking the whole
-  screen. Whether real Android devices hit this is unconfirmed - worth checking once this runs on
-  a device/emulator.
-- Initially set up Git LFS to commit the 222MB file (it's past GitHub's 100MB plain-git push limit),
-  but the user asked not to upload it at all - amended to gitignore app/src/main/assets/*.db instead
-  and dropped the LFS tracking. The file stays on disk locally (needed for the app to run and for
-  ad hoc verification) but isn't in git history at all.
-- Verified: ./gradlew :app:testDebugUnitTest (3/3 pass) and :app:assembleDebug both green.

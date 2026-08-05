@@ -46,6 +46,7 @@ import com.example.routeiq.domain.matching.GeoUtils
 import com.example.routeiq.domain.matching.MatchResult
 import com.example.routeiq.domain.matching.RouteGraphMatcher
 import com.example.routeiq.domain.matching.matchedRouteSegments
+import com.example.routeiq.domain.model.GeoPoint
 import com.example.routeiq.domain.model.GpxTrack
 import com.example.routeiq.domain.model.GraphEdge
 import com.example.routeiq.domain.scoring.DiscoveryBucket
@@ -58,6 +59,9 @@ import com.example.routeiq.domain.scoring.fuelingGapSegments
 import com.example.routeiq.domain.scoring.SafetyMarker
 import com.example.routeiq.domain.scoring.SafetyScore
 import com.example.routeiq.domain.scoring.safetyMarkers
+import com.example.routeiq.domain.scoring.OptimizationBucket
+import com.example.routeiq.domain.scoring.OptimizationScore
+import com.example.routeiq.domain.scoring.optimizationMarkers
 import java.text.NumberFormat
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -110,6 +114,18 @@ private sealed interface SafetyMarkersUiState {
 }
 
 /**
+ * The optimization score's own figures (issue #8) come straight from
+ * [MatchResult.Matched.matchedTurns], computed synchronously like [SafetyScore] - only resolving
+ * each flagged junction's coordinates for the map needs an async
+ * [GraphAssetRepository.getNodesNear] fetch, mirroring [SafetyMarkersUiState].
+ */
+private sealed interface OptimizationMarkersUiState {
+    data object Loading : OptimizationMarkersUiState
+    data class Ready(val markers: List<GeoPoint>) : OptimizationMarkersUiState
+    data class Error(val message: String) : OptimizationMarkersUiState
+}
+
+/**
  * Lets the rider bring a `.gpx` route into Route IQ via a manual file picker, or via [incomingUri]
  * when the file arrived through the Android share sheet (see `MainActivity`'s intent handling).
  * Renders the parsed track on [TrackMapView] once loaded, so the import pipeline is verifiable
@@ -131,6 +147,7 @@ fun GpxImportScreen(
     var fuelingState by remember { mutableStateOf<FuelingUiState?>(null) }
     var durationState by remember { mutableStateOf<DurationUiState?>(null) }
     var safetyMarkersState by remember { mutableStateOf<SafetyMarkersUiState?>(null) }
+    var optimizationMarkersState by remember { mutableStateOf<OptimizationMarkersUiState?>(null) }
     val repository = remember { GraphAssetRepository(GraphDatabase.getInstance(context).graphAssetDao()) }
     val matcher = remember { RouteGraphMatcher(repository) }
 
@@ -217,6 +234,24 @@ fun GpxImportScreen(
         }
     }
 
+    LaunchedEffect(matchedTrackResult) {
+        val track = loadedTrack
+        val flaggedJunctions = matchedTrackResult
+            ?.let { OptimizationScore.compute(it.matchedTurns, it.matchedDistanceM).flaggedJunctions }
+        if (track == null || flaggedJunctions == null) {
+            optimizationMarkersState = null
+            return@LaunchedEffect
+        }
+        optimizationMarkersState = OptimizationMarkersUiState.Loading
+        optimizationMarkersState = try {
+            val box = GeoUtils.computeBoundingBox(track.points, SafetyScore.JUNCTION_LOOKUP_BUFFER_M)
+            val nodes = repository.getNodesNear(box)
+            OptimizationMarkersUiState.Ready(optimizationMarkers(flaggedJunctions, nodes))
+        } catch (e: Exception) {
+            OptimizationMarkersUiState.Error(e.message ?: e.toString())
+        }
+    }
+
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { importUri(it) }
     }
@@ -233,7 +268,7 @@ fun GpxImportScreen(
             is GpxImportUiState.Idle -> Text("No route loaded yet.")
             is GpxImportUiState.Loading -> CircularProgressIndicator()
             is GpxImportUiState.Error -> Text("Couldn't import: ${state.message}")
-            is GpxImportUiState.Loaded -> GpxTrackSummary(state.track, matchState, fuelingState, durationState, safetyMarkersState)
+            is GpxImportUiState.Loaded -> GpxTrackSummary(state.track, matchState, fuelingState, durationState, safetyMarkersState, optimizationMarkersState)
         }
     }
 }
@@ -245,6 +280,7 @@ private fun GpxTrackSummary(
     fuelingState: FuelingUiState?,
     durationState: DurationUiState?,
     safetyMarkersState: SafetyMarkersUiState?,
+    optimizationMarkersState: OptimizationMarkersUiState?,
 ) {
     var useDetourCorridor by remember { mutableStateOf(false) }
 
@@ -267,6 +303,8 @@ private fun GpxTrackSummary(
         val selectedCorridor = fuelingResult?.let { if (useDetourCorridor) it.withDetour else it.onRoute }
         val safetyResult = matchedResult?.let { SafetyScore.compute(it.matchedTurns, it.matchedDistanceM) }
         val resolvedSafetyMarkers = (safetyMarkersState as? SafetyMarkersUiState.Ready)?.markers
+        val optimizationResult = matchedResult?.let { OptimizationScore.compute(it.matchedTurns, it.matchedDistanceM) }
+        val resolvedOptimizationMarkers = (optimizationMarkersState as? OptimizationMarkersUiState.Ready)?.markers
         TrackMapView(
             points = track.points,
             modifier = Modifier.fillMaxWidth(),
@@ -275,6 +313,7 @@ private fun GpxTrackSummary(
             fuelingSparseSegments = selectedCorridor?.let { fuelingGapSegments(track.points, it.sparseRanges) },
             fuelingExtendedGapSegments = selectedCorridor?.let { fuelingGapSegments(track.points, it.extendedGaps) },
             safetyMarkers = resolvedSafetyMarkers?.map { it.point to safetyTierColor(it.tier) },
+            optimizationMarkers = resolvedOptimizationMarkers,
         )
         // Renders as soon as the .gpx's own <ele> data is available - no map match needed. Only
         // when the file has no elevation data at all does it wait on matchedEdges, to fall back
@@ -292,6 +331,9 @@ private fun GpxTrackSummary(
         }
         if (safetyResult != null) {
             SafetyScoreCard(safetyResult)
+        }
+        if (optimizationResult != null) {
+            OptimizationScoreCard(optimizationResult)
         }
         if (fuelingState != null) {
             FuelingScoreCard(fuelingState, useDetourCorridor, onUseDetourCorridorChange = { useDetourCorridor = it })
@@ -672,5 +714,29 @@ private fun SafetyTierLegendItem(tier: SafetyScore.Tier, count: Int) {
     ) {
         Canvas(modifier = Modifier.size(10.dp)) { drawCircle(color = safetyTierColor(tier), radius = 5.dp.toPx()) }
         Text("${tier.label}: $count", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun OptimizationScoreCard(result: OptimizationScore.Result) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Optimization score", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "${result.score} — ${OptimizationBucket.forScore(result.score).label}",
+                style = MaterialTheme.typography.headlineSmall,
+            )
+            Text(
+                "Stop and braking cost of this route's junctions, from the map graph's own turn data.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (result.flaggedJunctions.isNotEmpty()) {
+                Text(
+                    "${result.flaggedJunctions.size} high-cost junction${if (result.flaggedJunctions.size == 1) "" else "s"} flagged on the map.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
     }
 }

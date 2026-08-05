@@ -7,6 +7,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -32,6 +33,10 @@ import kotlin.math.max
  * since junctions are single locations, not spans. Colors are resolved by the caller (a
  * `GeoPoint`-to-`Color` pair) rather than this view depending on `SafetyScore.Tier`, matching how
  * the elevation chart's climb-category colors stay UI-local instead of living in a shared view.
+ * [optimizationMarkers] (issue #8, from [com.example.routeiq.domain.scoring.optimizationMarkers])
+ * draws a square marker per high-penalty junction - a distinct shape (not just a distinct color)
+ * from [safetyMarkers]' circles, since a junction can be flagged by both scores at once and the
+ * two dot styles would otherwise be indistinguishable at a glance.
  */
 @Composable
 fun TrackMapView(
@@ -42,6 +47,7 @@ fun TrackMapView(
     fuelingSparseSegments: List<List<GeoPoint>>? = null,
     fuelingExtendedGapSegments: List<List<GeoPoint>>? = null,
     safetyMarkers: List<Pair<GeoPoint, Color>>? = null,
+    optimizationMarkers: List<GeoPoint>? = null,
 ) {
     if (points.size < 2) {
         Text("Not enough points to render a track")
@@ -49,7 +55,7 @@ fun TrackMapView(
     }
 
     val framePoints = points + matchedSegments.orEmpty().flatten() + undiscoveredSegments.orEmpty().flatten() +
-        safetyMarkers.orEmpty().map { it.first }
+        safetyMarkers.orEmpty().map { it.first } + optimizationMarkers.orEmpty()
     val minLat = framePoints.minOf { it.latitude }
     val maxLat = framePoints.maxOf { it.latitude }
     val minLon = framePoints.minOf { it.longitude }
@@ -101,8 +107,18 @@ fun TrackMapView(
         safetyMarkers?.forEach { (point, color) ->
             drawCircle(color = color, radius = SAFETY_MARKER_RADIUS_PX, center = toOffset(point))
         }
+        optimizationMarkers?.forEach { point ->
+            val center = toOffset(point)
+            drawRect(
+                color = OPTIMIZATION_MARKER_COLOR,
+                topLeft = Offset(center.x - OPTIMIZATION_MARKER_HALF_SIZE_PX, center.y - OPTIMIZATION_MARKER_HALF_SIZE_PX),
+                size = Size(OPTIMIZATION_MARKER_HALF_SIZE_PX * 2, OPTIMIZATION_MARKER_HALF_SIZE_PX * 2),
+            )
+        }
     }
 }
 
 private const val MIN_SPAN_DEGREES = 1e-6
 private const val SAFETY_MARKER_RADIUS_PX = 7f
+private const val OPTIMIZATION_MARKER_HALF_SIZE_PX = 6f
+private val OPTIMIZATION_MARKER_COLOR = Color(0xFF00838F)

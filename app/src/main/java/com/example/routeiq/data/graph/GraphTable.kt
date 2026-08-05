@@ -1,7 +1,10 @@
 package com.example.routeiq.data.graph
 
 /**
- * The tables present in the bundled `cycling_graph.db` Ride-Graph export.
+ * The tables present in Ride-Graph's exports. The app bundles `route_iq.db` (issue #13), a
+ * trimmed export that drops `corridors`/`corridor_connectors` (route-search-only, nothing here
+ * reads them) - [GraphAssetRepository.getGraphStats] already degrades those two counts to `null`
+ * on a missing table rather than crashing, so this enum still lists them for that debug screen.
  *
  * Kept as an enum (rather than raw strings) so callers can't build a
  * [GraphAssetDao] raw query against an arbitrary/unsanitized table name.
