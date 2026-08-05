@@ -1,3 +1,49 @@
+2026-08-05 - Issue #9 grill-me: Safety score design resolution (no implementation this cycle)
+- No issue was labeled ready-for-agent this cycle (all open issues are ready-for-human or grill-me,
+  pending design resolution) - per explicit user request ("/next-issue and /grill-me regarding the
+  implementation of issue 9"), this cycle's work was entirely the /grill-me session issue #9's own
+  acceptance criteria call for, not a code implementation. No RouteIQ code changed.
+- Grounded the session in two real sources before asking the user anything: (1) the bundled
+  cycling_graph.db - motorway/trunk highway tags (the ported HazardFilter's whole exclusion set)
+  match ZERO of the 526,408 edges, hazard_score is NOT NULL and 99.97% exactly 0.0 (1,522,491/
+  1,522,973 turns), nonzero range 0-0.2651, hazard_source is NOT NULL and never actually null
+  (unridden_model 96.7%/terminal_speed 3.3%/braking_measured 0.0003%, only 4 rows total); (2) the
+  real Ride-Graph source at PycharmProjects/Ride-Graph's src/ap9_route_features/hazard_scorer.py -
+  hazard_score is gated to exactly 0.0 unless the junction has an OSM give_way/stop/traffic_signals
+  priority tag, computed per-approach (from_node, junction_node) not per-turn, using
+  approach_speed * priority_severity * crossing_road_class_factor / 50 with no cap; an is_hard_reject
+  tier exists in that file but is dead code, never wired into the export.
+- Key resolution (user-driven, diverges from the issue's literal wording): edge-level HazardFilter is
+  dropped entirely - SafetyScore becomes junction-only. The user's call after I explained hazard_score
+  keys off the *crossing* road at a junction while HazardFilter keys off the *traveled* edge itself (two
+  different hazards in principle) was still "I only care about junctions" - not worth rating the
+  traveled road's highway class at all for this issue.
+- User also drove a real upstream finding: proposed recalibrating Ride-Graph's hazard_score formula
+  itself (give_way/stop both to severity 1.0, traffic_signals to 0, replace the unexplained
+  NORMALIZATION_SPEED_KMH=50 constant with a named SPEED_THRESHOLD_FOR_MAX_HAZARD_SCORE=30 and cap the
+  score at 1.0) plus a LOW(0-0.33)/MEDIUM(0.33-0.67)/HIGH(0.67-1) classification schema. Filed as
+  github.com/robert-crump/Ride-Graph#100 rather than implemented directly (same precedent as #8's
+  Ride-Graph#98) - confirmed with the user this does NOT block RouteIQ#9 since "hazard_score > 0" stays
+  a valid flag gate before and after recalibration, and the tier boundaries were designed against the
+  proposed 1.0 cap up front so no RouteIQ code will need to change when Ride-Graph ships it.
+- Other resolutions: no synthesized 0-100 composite (ElevationScore precedent) - card reports actual
+  flagged-junction count, count per 100km (rounded int, normalized against matched distance), and a
+  per-tier breakdown; flag threshold is any hazard_score > 0 (already a real gate in hazard_scorer.py,
+  not an arbitrary cutoff); hazard_source read but not displayed/weighted (reflects input provenance,
+  not a second severity axis, and moot for null-handling since it's never null); map shows colored point
+  markers per flagged junction by tier (new marker primitive on TrackMapView, junction coords resolved
+  via the already-existing GraphAssetRepository.getNodesNear - no new SQL needed); no textual per-junction
+  list on the card (map markers cover it - same call already made for the elevation card's climb list);
+  standalone domain/scoring/SafetyScore.kt object, no RouteRatingEngine scaffold (unbroken precedent
+  across 4 prior scoring issues).
+- Outcome differs from #8's: nothing here blocks implementation (hazardScore/hazardSource already wired
+  into GraphTurn/GraphAssetRepository from an earlier issue, junction coords already resolvable, matched
+  turns already exposed by MatchResult.Matched) - relabeled #9 ready-for-human -> ready-for-agent (unlike
+  #8, which stayed ready-for-human). Full resolution posted as a comment on RouteIQ#9, issue body/
+  acceptance criteria rewritten to match, blocked-by list updated to note Ride-Graph#100 as a non-blocking
+  future improvement.
+- No tests run/no build run - no code touched this cycle.
+
 2026-08-05 - Issue #10: Duration estimate: historical speed with slope-bucket fallback (DurationEstimate)
 - Also ran a /grill-me session on issue #8 (OptimizationScore) this cycle per explicit user request,
   but that issue turned out to be *blocked*, not implemented: grounded the open questions in the real
