@@ -15,4 +15,5 @@
 local.properties
 
 # Bundled Ride-Graph map export - too large to commit; see app/src/main/assets/README.md
-app/src/main/assets/*.db
+# (route_iq_fixture.db is small and IS committed, mirroring Velometrics' cycling_graph_fixture.db)
+app/src/main/assets/route_iq.db

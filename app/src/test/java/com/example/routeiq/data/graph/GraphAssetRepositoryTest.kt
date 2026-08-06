@@ -14,12 +14,14 @@ import org.robolectric.RobolectricTestRunner
 import java.io.File
 
 /**
- * Equivalent to Velometrics' `CyclingAssetDatabaseFixtureTest`: confirms a
- * Room-compatible SQLite file with the Ride-Graph export's table names opens
- * cleanly and that [GraphAssetRepository] can read row counts back out of
- * it. Builds its own tiny fixture DB rather than shipping a binary asset,
- * since the real `cycling_graph.db` export isn't available in this repo yet
- * (see app/src/main/assets/README.md).
+ * Confirms a Room-compatible SQLite file with the Ride-Graph export's table
+ * names opens cleanly and that [GraphAssetRepository] can read specific rows
+ * back out of it - a hand-built fixture, staged to pin down repository-logic
+ * edge cases (JSON metadata parsing, bbox-exclusion of "far" POIs, traversed
+ * vs. untraversed edge pairs) that a real export's data can't deliberately
+ * exercise. [GraphAssetFixtureTest] is the companion test - equivalent to
+ * Velometrics' `CyclingAssetDatabaseFixtureTest` - that opens the real
+ * checked-in `route_iq_fixture.db` export instead.
  */
 @RunWith(RobolectricTestRunner::class)
 class GraphAssetRepositoryTest {
