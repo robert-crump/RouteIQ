@@ -23,8 +23,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import com.example.routeiq.data.gpx.extractGpxUri
+import com.example.routeiq.ui.RouteIqNavHost
 import com.example.routeiq.ui.debug.GraphStatsScreen
-import com.example.routeiq.ui.gpx.GpxImportScreen
 import com.example.routeiq.ui.theme.RouteIQTheme
 
 private enum class RouteIqTab(val label: String) { IMPORT("Import"), GRAPH_STATS("Graph stats") }
@@ -73,9 +73,9 @@ private fun RouteIqApp(
             }
         }
         when (selectedTab) {
-            RouteIqTab.IMPORT -> GpxImportScreen(
-                incomingUri = incomingGpxUri,
-                onIncomingUriConsumed = onIncomingGpxUriConsumed,
+            RouteIqTab.IMPORT -> RouteIqNavHost(
+                incomingGpxUri = incomingGpxUri,
+                onIncomingGpxUriConsumed = onIncomingGpxUriConsumed,
             )
             RouteIqTab.GRAPH_STATS -> GraphStatsScreen()
         }

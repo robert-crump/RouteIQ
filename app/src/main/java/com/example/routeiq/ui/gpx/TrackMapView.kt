@@ -37,6 +37,11 @@ import kotlin.math.max
  * draws a square marker per high-penalty junction - a distinct shape (not just a distinct color)
  * from [safetyMarkers]' circles, since a junction can be flagged by both scores at once and the
  * two dot styles would otherwise be indistinguishable at a glance.
+ * [elevationGradeSegments] (issue #11, from [com.example.routeiq.domain.scoring.elevationGradeSegments])
+ * draws the route as a grade-shaded polyline, one colored stroke per contiguous [com.example.routeiq.domain.scoring.GradeBucket]
+ * segment - color resolved by the caller, same pattern as [safetyMarkers]. Per issue #11's
+ * resolved design, the caller (the Results screen) only passes the one overlay's worth of props
+ * for whichever dimension is currently toggled on - this view has no toggle state of its own.
  */
 @Composable
 fun TrackMapView(
@@ -48,6 +53,7 @@ fun TrackMapView(
     fuelingExtendedGapSegments: List<List<GeoPoint>>? = null,
     safetyMarkers: List<Pair<GeoPoint, Color>>? = null,
     optimizationMarkers: List<GeoPoint>? = null,
+    elevationGradeSegments: List<Pair<List<GeoPoint>, Color>>? = null,
 ) {
     if (points.size < 2) {
         Text("Not enough points to render a track")
@@ -55,7 +61,8 @@ fun TrackMapView(
     }
 
     val framePoints = points + matchedSegments.orEmpty().flatten() + undiscoveredSegments.orEmpty().flatten() +
-        safetyMarkers.orEmpty().map { it.first } + optimizationMarkers.orEmpty()
+        safetyMarkers.orEmpty().map { it.first } + optimizationMarkers.orEmpty() +
+        elevationGradeSegments.orEmpty().flatMap { it.first }
     val minLat = framePoints.minOf { it.latitude }
     val maxLat = framePoints.maxOf { it.latitude }
     val minLon = framePoints.minOf { it.longitude }
@@ -114,6 +121,11 @@ fun TrackMapView(
                 topLeft = Offset(center.x - OPTIMIZATION_MARKER_HALF_SIZE_PX, center.y - OPTIMIZATION_MARKER_HALF_SIZE_PX),
                 size = Size(OPTIMIZATION_MARKER_HALF_SIZE_PX * 2, OPTIMIZATION_MARKER_HALF_SIZE_PX * 2),
             )
+        }
+        elevationGradeSegments?.forEach { (segment, color) ->
+            if (segment.size >= 2) {
+                drawPath(pathFor(segment), color = color, style = Stroke(width = 6f))
+            }
         }
     }
 }

@@ -179,7 +179,8 @@ object ElevationScore {
         return boundaries.map { distanceM -> distanceM to interpolateElevation(profile, distanceM) }
     }
 
-    private fun interpolateElevation(profile: List<Pair<Double, Double>>, distanceM: Double): Double {
+    /** Package-visible (not private) so [elevationGradeSegments] can reuse it against [Result.profile] without duplicating the lookup. */
+    internal fun interpolateElevation(profile: List<Pair<Double, Double>>, distanceM: Double): Double {
         if (profile.size == 1) return profile[0].second
         var i = 0
         while (i < profile.size - 2 && profile[i + 1].first < distanceM) i++

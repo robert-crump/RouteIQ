@@ -1,3 +1,80 @@
+2026-08-06 - Issue #11: Results dashboard - independent score cards with per-score map overlays
+- Design was already fully resolved by the same-day /grill-me session (see the entry below and the
+  posted comment on RouteIQ#11) - implementation followed that resolution directly, no fresh
+  design questions this cycle.
+- Added androidx.navigation:navigation-compose (2.9.5, resolved fine against this environment's
+  Maven mirror) - first nav library in the app. New ui/RouteIqNavHost.kt owns every piece of
+  import/match/scoring state (previously all local to GpxImportScreen) and hosts a two-route
+  NavHost ("import"/"results"); state lives in the host rather than as nav arguments since
+  navigating a MatchResult/GpxTrack through typed Compose nav args would need (de)serialization
+  this single-Activity, single-in-flight-import app has no other use for - both screens just read
+  the same remembered state back out. GpxImportScreen.kt shrank to a purely presentational file
+  picker + import-status screen (uiState/matchState now internal, owned by the host); a match that
+  actually *errors* stays there (nothing to show results of), but Matched/OutsideCoverage both
+  navigate to a new ResultsScreen.kt - a negative-but-complete OutsideCoverage answer is still a
+  finished match, and the parent PRD's user story #13 doesn't want a rider mistaking a partial
+  result for a full one, so both outcomes get the same navigation treatment as the ready case,
+  just rendered differently once there (see below).
+- Back navigation discards the loaded track (issue's own wording): resets every piece of
+  per-import state as ONE combined action (backToImport()) fired from both the on-screen Back
+  button and a BackHandler(enabled = on Results) for the system back gesture - deliberately not a
+  reactive LaunchedEffect(currentRoute) doing the reset, since that raced the separate
+  navigate-to-Results effect (which still reads the not-yet-reset matchState) and bounced straight
+  back to Results after a real back press. Combining reset+pop into one synchronous action avoids
+  the race entirely.
+- domain/scoring/ElevationGradeSegments.kt: new elevationGradeSegments(routePoints, profile) - the
+  "distance-to-point grade resampling function" the resolved design calls for. Assigns each route
+  point its own cumulative haversine distance (matching fuelingGapSegments' approach), looks up
+  elevation at that distance via ElevationScore.interpolateElevation (widened from private to
+  internal to reuse rather than duplicate), buckets the local grade between each consecutive pair
+  by GradeBucket.forGradePercent(abs(grade)) - sign-agnostic, since a steep descent reads as
+  notable as a climb of the same steepness - and merges consecutive same-bucket point-pairs into
+  one GradeSegment, sharing the boundary point with its neighbor so the drawn polyline stays
+  visually continuous across bucket changes. 4 tiers: <3%/3-6%/6-9%/>9%.
+- domain/scoring/DiscoveryRouteSegments.kt: new discoverySegments(matchedEdges) - parity with
+  fuelingGapSegments/safetyMarkers/optimizationMarkers, replacing the two separate inline
+  matchedRouteSegments(...) calls the screen made directly pre-#11. Partitions by isTraversed,
+  decodes each half via the existing matchedRouteSegments, tags each resulting segment
+  TRAVERSED/UNDISCOVERED.
+- ui/gpx/ScoreCard.kt: shared Card+Column+title shell, extracted from the six near-identical
+  hand-repeated versions each score's own issue (#6-#9) had built inline with no shared ancestor to
+  factor into until they all landed on one screen together.
+- ui/gpx/ResultsScreen.kt: all five ScoreCards in Fueling/Optimization/Elevation/Safety/Discovery
+  order (not collapsed into a composite number); a plain-text DurationSummaryHeader above them
+  (not a sixth card, per the issue's own "alongside the scores" wording); a standalone
+  OverlaySegmentedControl (Material3 FilterChips in a horizontally-scrolling Row, defaults to none
+  selected, tapping the already-selected chip deselects) between the cards and the map; TrackMapView
+  itself, fed only the selected dimension's already-resolved geometry (everything else stays null -
+  the toggle is pure filtering of state computed once up front when matching resolves, never a
+  fresh fetch per tap, per the issue's explicit "no per-tap loading state" criterion); and an
+  OverlayStatusFooter below the map resolved by a pure resolveFooterContent(...) function (no
+  composable calls, so the actual @Composable footer just switches on its result) - a swatch legend
+  for multi-color overlays (Elevation's 4 grade tiers, Safety's 3 hazard tiers, Discovery's
+  ridden/not-ridden), nothing extra for single-color Optimization markers (its own card already
+  tells that story), and an explicit "No {dimension} issues flagged on this route." note (or a
+  loading/error message while its async fetch is still in flight) when the selected overlay
+  resolves to zero geometry, instead of a silently blank map. MatchUiState.OutsideCoverage renders
+  as a bare reason message - no cards, no map, no segmented control at all, matching the parent
+  PRD's out-of-coverage concern.
+- TrackMapView gained an elevationGradeSegments: List<Pair<List<GeoPoint>, Color>>? param (color
+  resolved by the caller, same pattern as safetyMarkers) - drawn as one stroke per GradeSegment;
+  matchedSegments/undiscoveredSegments params kept as-is rather than folded into a generic overlay
+  shape, since ResultsScreen already derives them from discoverySegments()'s output by filtering on
+  traversal, giving the new helper its testable parity without an unforced view-API rewrite.
+- Tests: 13 new (ElevationGradeSegmentsTest: <2 points/empty profile both empty, flat series one
+  FLAT segment, steep series one VERY_STEEP segment, mixed series splits into two segments sharing
+  their boundary point, descent buckets by magnitude not sign, all four GradeBucket boundaries;
+  DiscoveryRouteSegmentsTest: empty/fully-traversed/fully-untraversed/mixed edges, edges with no
+  usable geometry dropped same as matchedRouteSegments - fixtures built with a small hand-rolled
+  Google-polyline encoder mirroring PolylineDecoder, since no test in the repo had needed to
+  produce real geometryEncoded strings before). 106/106 total (./gradlew :app:testDebugUnitTest)
+  and :app:assembleDebug both green.
+- No adb/emulator available in this environment (checked platform-tools/adb.exe directly this time -
+  present, but `adb devices` lists none and there are no AVDs configured; same recurring limitation
+  as every prior UI-touching issue #3-#10) - the new screen, navigation, segmented control, and
+  grade-shaded overlay are unverified on-device; rests on the unit tests + assembleDebug above.
+- Checked off #11's acceptance criteria and closed it.
+
 2026-08-06 - Issue #11 grill-me: Results dashboard design resolution (no implementation this cycle)
 - Ran the /grill-me session issue #11's own acceptance criteria require, invoked directly via
   `/grill-me on issue 11`, before any implementation. No RouteIQ code changed.
@@ -458,105 +535,3 @@
   do an on-device visual check of the new card or the two-toned map overlay. Verification rests on
   the unit tests + assembleDebug above.
 
-2026-07-31 - Issue #4: Match route onto the map graph, with out-of-coverage detection (RouteGraphMatcher)
-- Velometrics IS on this machine after all - the user corrected me mid-task: it's a sibling of
-  AndroidStudioProjects, at C:\Users\bob22\StudioProjects\Velometrics (not inside
-  AndroidStudioProjects, which is why my first search missed it). Its `MapMatcher`/
-  `RTreeSpatialIndex`/`GeoUtils`/`PolylineDecoder` are real, working, tested code - not just prose
-  in the PRD - so this was a faithful port, not a from-scratch design, once found. Worth checking
-  StudioProjects (not just AndroidStudioProjects) up front next time a "port from Velometrics" issue
-  comes up, rather than concluding it's unavailable from one missed directory.
-- RouteGraphMatcher (domain/matching) ports MapMatcher's algorithm near-verbatim: greedy nearest-edge
-  snapping via a real bulk-loaded R-tree (RTreeSpatialIndex, com.github.davidmoten:rtree2:0.9.3 -
-  same library/version Velometrics uses, added as a new dependency), heading-based rejection of
-  perpendicular spurs/reverse twins (+/-45deg), anchor-by-point-count pruning (min 2 points),
-  bounded local-adjacency BFS gap repair (depth 6, with the U-turn-retry special case), and
-  iterative degree-1 leaf pruning that protects the track's own start/end nodes. Kept
-  matchTrackChunked's 5km-chunk design (Velometrics built this specifically for .gpx import) instead
-  of the single-shot matchTrack clustering uses, since a single unmatched stretch shouldn't blank the
-  whole result - directly satisfies the issue's "partial coverage reports an accurate percentage"
-  criterion. Dropped the Region-reuse-across-many-tracks abstraction (clustering-only concern, not
-  needed for one imported route at a time).
-- What's new (no Velometrics equivalent): MatchResult.OutsideCoverage. Velometrics' matchTrack just
-  returns null on any failure; this issue explicitly wants "outside covered territory" distinguished
-  from "matched, but low coverage" in the UI. Implemented as a cheap pre-check (bundled graph's own
-  metadata bbox vs. the track's bbox, via a new GraphAssetRepository.getBounds()) before touching the
-  526K-edge graph at all, plus a second check for "in-region but nothing nearby snapped."
-- GraphAssetRepository gained getEdgesNear/getNodesNear/getTurnsNear, mirroring Velometrics'
-  MapEdgeDao/MapNodeDao/MapTurnDao raw SQL exactly (edges: OR across both endpoints' bboxes, not AND,
-  so boundary-crossing edges aren't dropped; turns: join on junction_node). Domain models (GraphEdge,
-  GraphTurn) are lean - only the columns matching actually needs (fromNode/toNode/lengthM/highway/
-  name/isTraversed/geometryEncoded) - Velometrics' MapEdge carries a lot of speed/power percentile
-  fields that turn out to live in map_edges' `metadata` JSON blob column in the real export, not
-  separate SQL columns; left for whichever future scoring issue (DurationEstimate etc.) actually
-  needs them.
-- One real bug the port surfaced: Velometrics reuses its 20m snap radius as the DB-slice load buffer
-  too (computeBoundingBox(points, INTERVAL_EDGE_SNAP_RADIUS_M)). That's tight enough that a graph node
-  can legitimately fall just outside the loaded slice when a GPS sample doesn't land within 20m of it
-  - and since these fixture edges use empty geometryEncoded (falling back to node-coordinate geometry),
-  a missing endpoint node corrupts that edge to a degenerate (0,0) bounding box, breaking snapping
-  entirely. Fixed by splitting the buffer: kept EDGE_SNAP_RADIUS_M=20 exactly for the per-point RTree
-  query radius (drives the heading-rejection tuning, must match Velometrics), added a separate, more
-  generous REGION_LOAD_BUFFER_M=200 just for the DB-slice window. Caught by the very first ported test
-  failing, not by inspection - worth remembering that Velometrics' own test suite never hits this
-  because its unit tests use a fake repository that ignores bbox args entirely and returns everything.
-- Tests: ported all 8 MapMatcherTest scenarios (clean chain, gap repair, perpendicular-spur rejection,
-  single-point lateral spur, anchor-floor bridge restoration, fork disambiguation by point-count,
-  out-and-back leaf peeling, disconnected-components rejection) plus both RTreeSpatialIndexTest cases,
-  swapped from Velometrics' fake in-memory MapGraphRepository onto a real SQLite fixture through
-  GraphAssetRepository (same swap GraphAssetRepositoryTest made for issue #2). Added new tests for the
-  three OutsideCoverage paths (bbox-disjoint, in-bbox-but-no-nearby-roads, and disconnected-components
-  now resolving to OutsideCoverage rather than Velometrics' bare null) and one partial-coverage test
-  asserting an accurate sub-100% percentage. RouteShapeDiagnosisHarness (also mentioned in the issue)
-  turned out to be about route *generation*, not matching - explicitly out of scope per the PRD, so
-  nothing was ported from it.
-  14/14 new matching tests pass, 38/38 total (./gradlew :app:testDebugUnitTest) and :app:assembleDebug
-  both green.
-- Ad hoc verification against the real 222MB cycling_graph.db (not committed, same pattern as issue
-  #2): a real 11-node chain walked from the actual edges table matched at 100% coverage with correct
-  turns resolved, and a track near lat 48.0 (well south of the real bbox) correctly came back
-  OutsideCoverage.
-- UI: GpxImportScreen now auto-matches once a track loads, showing "Matching..." -> coverage % or a
-  red "Outside covered territory: <reason>" message. TrackMapView gained an optional matchedSegments
-  param, drawing each matched edge's own decoded polyline in green over the raw blue track -
-  deliberately NOT stitched into one direction-corrected path (matchedRouteSegments in
-  domain/matching): a plain stroke looks identical regardless of which end an edge's geometry decodes
-  from, so resolving travel direction here would have been pure wasted complexity.
-
-2026-07-31 - Issue #3: Import a .gpx file (file picker + share sheet)
-- GpxImportService (data/gpx) wraps ContentResolver.openInputStream + GpxParser.parse behind one
-  suspend call, shared by both entry points named in the issue.
-- GpxParser ported from Velometrics almost verbatim - note for future reference: Velometrics'
-  GpxParser already extracts <ele> elevation fully (the PRD's "currently discards these" note is
-  stale, at least as of the copy on this machine). Only change made was swapping MapLibre's LatLng
-  for a new dependency-free GeoPoint(lat, lon) (domain/model), since Route IQ has no map library yet
-  and issue #3 doesn't need one - kept the port faithful otherwise, including its Result<GpxTrack>
-  failure modes (empty file, malformed XML) and its rte/trk dual-format handling.
-- Added net.sf.kxml:kxml2:2.3.0 as a testImplementation (same as Velometrics) - XmlPullParserFactory
-  has no default impl on a pure-JVM unit-test classpath without it.
-- Share-sheet + file-open boundary: extractGpxUri(Intent) (data/gpx/GpxIntentUtils.kt) reads
-  ACTION_VIEW's data or ACTION_SEND's EXTRA_STREAM. minSdk is already 35 (>= Tiramisu) so this uses
-  the typed getParcelableExtra(name, Uri::class.java) directly, no version-gated fallback needed.
-  MainActivity wires it in onCreate/onNewIntent (added launchMode="singleTop" so a second share
-  doesn't spawn a new instance) into a mutableStateOf<Uri?> passed down to GpxImportScreen.
-- Manifest gained VIEW/SEND intent-filters (mimeType application/gpx+xml + application/xml), copied
-  from Velometrics' proven set rather than guessing at broader coverage.
-- "Basic map view" (TrackMapView, ui/gpx) is a from-scratch Canvas polyline - projects lat/lon with
-  a cos(latitude) longitude-scale correction so the shape isn't stretched, no tiles/network/API key.
-  Deliberately minimal: this issue only needs the import pipeline to be visually verifiable
-  end-to-end, not a real basemap - MapLibre integration is out of scope until routes need to be
-  matched against the map graph.
-- MainActivity previously showed GraphStatsScreen (issue #2's debug screen) directly; replaced with
-  a tiny two-tab switch (plain Row of TextButtons, not TabRow - avoided TabRow because the stable
-  API is deprecated in this compose-bom in favor of Primary/SecondaryTabRow, and pulling those in
-  isn't worth an experimental-API opt-in for a two-item switch) so both screens stay reachable.
-- Tests: GpxParserTest (12, pure JVM), GpxIntentUtilsTest (5, Robolectric - needs real Intent/Uri),
-  GpxImportServiceTest (3, Robolectric - registers a fake content:// stream via
-  shadowOf(contentResolver).registerInputStream). All new + existing tests green
-  (./gradlew :app:testDebugUnitTest, 24/24) and :app:assembleDebug is green.
-- Manual on-device verification was cut short: the only adb-attached device turned out to be the
-  user's personal phone (locked, personal info visible on the lock screen), not a test
-  emulator/device. Stopped immediately rather than unlocking it, deleted the two screenshots pulled
-  before that was noticed and the pushed test fixture, and uninstalled the test APK. Verification
-  for this issue rests on the unit tests + assembleDebug above, not an on-device screenshot - worth
-  setting up a dedicated emulator before the next issue that wants a live-device check.
