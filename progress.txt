@@ -1,3 +1,36 @@
+2026-08-06 - Issue #11 grill-me: Results dashboard design resolution (no implementation this cycle)
+- Ran the /grill-me session issue #11's own acceptance criteria require, invoked directly via
+  `/grill-me on issue 11`, before any implementation. No RouteIQ code changed.
+- Surveyed the codebase first: GpxImportScreen.kt/TrackMapView.kt already render independent score
+  cards + a canvas map together (built up incrementally across #4-#10), but with no overlay-toggle
+  interaction - every overlay (matched route, undiscovered segments, fueling gaps, safety markers,
+  optimization markers) draws simultaneously today, which is exactly the clutter problem #11 exists
+  to fix. Also confirmed all six blockers (#5-#10) are closed, so #11 was actually unblocked.
+- 19 questions across the design tree, each with a recommended answer, user chose the recommendation
+  on all but one (map overlay control placement - user picked a standalone segmented control above
+  the map over the recommended per-card toggle). Key resolutions: new Results screen via Jetpack
+  Navigation Compose (app currently has no nav library at all); single-select+deselectable segmented
+  control, defaults to none selected; Elevation gets a new grade-shaded polyline overlay (4-tier
+  buckets <3%/3-6%/6-9%/>9%) to resolve a real tension - the issue's acceptance criteria list
+  "elevation profile" as a togglable map overlay but ElevationScore was deliberately built chart-only
+  with no map geometry; all overlay geometry (including the async node lookups Safety/Optimization
+  need via GraphAssetRepository.getNodesNear) resolved once up front rather than per-tap; Discovery
+  gets a new discoverySegments() helper for parity with fuelingGapSegments/safetyMarkers/
+  optimizationMarkers (today it's the only overlay built inline in the screen, not unit-testable);
+  contextual legend under the map for multi-color overlays, with an explicit "none flagged" note
+  when a selected overlay has zero geometry; Duration moves out of the card list to a summary header
+  (per the issue's own wording, "alongside the scores" not "as one of the scores"); out-of-coverage
+  replaces the whole screen (no partial view) per parent PRD user story #13's concern about riders
+  mistaking partial results for a complete rating; shared ScoreCard composable extracted from the
+  six near-identical hand-repeated card shells; test scope limited to the two new pure functions
+  (grade-bucket resampling, discoverySegments), no new Compose UI test category introduced.
+- Posted the full resolution as a comment on RouteIQ#11, rewrote the issue body's acceptance
+  criteria to match, relabeled ready-for-human -> ready-for-agent. Nothing blocks implementation -
+  every domain input already exists (MatchResult.Matched, all six score Result types,
+  GraphAssetRepository.getNodesNear); new pieces are additive (navigation-compose dependency, one
+  new pure function, one new helper, one new composable, one new screen).
+- No tests run/no build run - no code touched this cycle.
+
 2026-08-05 - Issue #8: Optimization score: flag high-braking junctions (OptimizationScore)
 - Re-checked this issue (invoked directly via `/next-issue issue 8`) before assuming it was still
   blocked, since the last session's entry (below, issue #10's) left it stuck on
